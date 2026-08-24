@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Infinite Grid Canvas Demo</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #1e1e1e;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+  }
+  #hint {
+    position: fixed;
+    top: 12px;
+    left: 100px;
+    color: #cfcfcf;
+    font-family: system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 8px 12px;
+    border-radius: 6px;
+    pointer-events: none;
+    user-select: none;
+    z-index: 5;
+  }
+
+  #toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 84px;
+    height: 100vh;
+    background: rgba(30, 30, 30, 0.92);
+    border-right: 1px solid rgba(255, 255, 255, 0.12);
+    box-sizing: border-box;
+    padding: 16px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    z-index: 10;
+    user-select: none;
+  }
+  #toolbar .toolbar-title {
+    color: #888;
+    font-family: system-ui, sans-serif;
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  .device-icon {
+    width: 56px;
+    height: 56px;
+    background: #ffffff;
+    border: 3px solid #111;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-family: system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: #111;
+    cursor: grab;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  }
+  .device-icon:active {
+    cursor: grabbing;
+  }
+
+  /* 拖拽生成时跟随鼠标的幽灵图标 */
+  #ghost-icon {
+    position: fixed;
+    width: 56px;
+    height: 56px;
+    background: #ffffff;
+    border: 3px solid #111;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-family: system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: #111;
+    pointer-events: none;
+    opacity: 0.85;
+    z-index: 20;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="toolbar">
+  <div class="toolbar-title">设备库</div>
+  <div class="device-icon" id="crusher-icon">粉碎机</div>
+</div>
+
+<div id="ghost-icon">粉碎机</div>
+
+<div id="hint">
+  拖拽空白处：平移画布　|　滚轮：缩放<br>
+  从左侧工具栏拖出图标：放置设备<br>
+  点击设备：选中（高亮边框）　|　Delete / Backspace：删除选中设备<br>
+  设备网格重叠时会实时标红警示
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const toolbar = document.getElementById('toolbar');
+  const crusherIcon = document.getElementById('crusher-icon');
+  const ghostIcon = document.getElementById('ghost-icon');
+
+  // ---- 世界坐标系参数 ----
+  const GRID_SIZE = 50; // 每个网格单元的世界坐标尺寸(px)
+  let scale = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  // ---- 设备数据 ----
+  // devices: { id, gridX, gridY, w, h, color, borderColor, label }
+  let devices = [];
+  let nextId = 1;
+
+  let selectedId = null;
+
+  // ---- 画布内交互状态 ----
+  let isPanning = false;
+  let lastMouseX = 0;
+  let lastMouseY = 0;
+
+  let draggingDeviceId = null;
+  let dragOffsetWX = 0;
+  let dragOffsetWY = 0;
+  let dragDeviceWX = 0; // 拖拽中设备左上角的实时(已吸附)世界坐标
+  let dragDeviceWY = 0;
+
+  // ---- 从工具栏拖拽生成新设备的状态 ----
+  let spawning = false;
+  const spawnTemplate = { w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' };
+  let spawnPreview = null; // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
+
+  function resize() {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    draw();
+  }
+  window.addEventListener('resize', resize);
+
+  function screenToWorld(sx, sy) {
+    return { x: (sx - offsetX) / scale, y: (sy - offsetY) / scale };
+  }
+  function worldToScreen(wx, wy) {
+    return { x: wx * scale + offsetX, y: wy * scale + offsetY };
+  }
+
+  function initView() {
+    offsetX = window.innerWidth / 2;
+    offsetY = window.innerHeight / 2;
+  }
+
+  function getDeviceRectWorld(gridX, gridY, w, h) {
+    return { x: gridX * GRID_SIZE, y: gridY * GRID_SIZE, w: w * GRID_SIZE, h: h * GRID_SIZE };
+  }
+
+  // 获取某设备当前的"有效"网格位置(若正在被拖拽则用拖拽中的实时位置)
+  function effectiveGridPos(dev) {
+    if (dev.id === draggingDeviceId) {
+      return { gridX: Math.round(dragDeviceWX / GRID_SIZE), gridY: Math.round(dragDeviceWY / GRID_SIZE) };
+    }
+    return { gridX: dev.gridX, gridY: dev.gridY };
+  }
+
+  function rectsOverlap(a, b) {
+    return !(a.gridX + a.w <= b.gridX || b.gridX + b.w <= a.gridX ||
+             a.gridY + a.h <= b.gridY || b.gridY + b.h <= a.gridY);
+  }
+
+  // 计算当前所有设备中互相重叠(碰撞)的设备 id 集合
+  function computeCollidingIds() {
+    const colliding = new Set();
+    const rects = devices.map(d => {
+      const pos = effectiveGridPos(d);
+      return { id: d.id, gridX: pos.gridX, gridY: pos.gridY, w: d.w, h: d.h };
+    });
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        if (rectsOverlap(rects[i], rects[j])) {
+          colliding.add(rects[i].id);
+          colliding.add(rects[j].id);
+        }
+      }
+    }
+    return colliding;
+  }
+
+  function hitTestDevice(worldX, worldY) {
+    // 从后往上(数组末尾即最上层)遍历，返回命中的设备
+    for (let i = devices.length - 1; i >= 0; i--) {
+      const dev = devices[i];
+      const pos = effectiveGridPos(dev);
+      const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
+      if (worldX >= rect.x && worldX <= rect.x + rect.w &&
+          worldY >= rect.y && worldY <= rect.y + rect.h) {
+        return dev;
+      }
+    }
+    return null;
+  }
+
+  // ---- 绘制 ----
+
+  function drawGrid() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#1e1e1e';
+    ctx.fillRect(0, 0, w, h);
+
+    const topLeft = screenToWorld(0, 0);
+    const bottomRight = screenToWorld(w, h);
+
+    const startCol = Math.floor(topLeft.x / GRID_SIZE);
+    const endCol = Math.ceil(bottomRight.x / GRID_SIZE);
+    const startRow = Math.floor(topLeft.y / GRID_SIZE);
+    const endRow = Math.ceil(bottomRight.y / GRID_SIZE);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let col = startCol; col <= endCol; col++) {
+      const sx = Math.round(worldToScreen(col * GRID_SIZE, 0).x) + 0.5;
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, h);
+    }
+    for (let row = startRow; row <= endRow; row++) {
+      const sy = Math.round(worldToScreen(0, row * GRID_SIZE).y) + 0.5;
+      ctx.moveTo(0, sy);
+      ctx.lineTo(w, sy);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const originScreen = worldToScreen(0, 0);
+    ctx.moveTo(originScreen.x, 0);
+    ctx.lineTo(originScreen.x, h);
+    ctx.moveTo(0, originScreen.y);
+    ctx.lineTo(w, originScreen.y);
+    ctx.stroke();
+  }
+
+  function drawDeviceRect(rect, dev, opts) {
+    const topLeft = worldToScreen(rect.x, rect.y);
+    const sw = rect.w * scale;
+    const sh = rect.h * scale;
+
+    ctx.save();
+    ctx.globalAlpha = opts.dragging ? 0.85 : 1;
+    ctx.fillStyle = dev.color;
+    ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = dev.borderColor;
+    ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+
+    // 重叠警示：半透明红色覆盖 + 红色描边
+    if (opts.colliding) {
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.45)';
+      ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#ff1744';
+      ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+    }
+
+    // 选中高亮
+    if (opts.selected) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ffeb3b';
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(topLeft.x - 3, topLeft.y - 3, sw + 6, sh + 6);
+      ctx.setLineDash([]);
+    }
+
+    // 标签
+    if (sw > 24 && sh > 16) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#111';
+      ctx.font = `${Math.max(10, Math.min(16, sh * 0.22))}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dev.label, topLeft.x + sw / 2, topLeft.y + sh / 2);
+    }
+
+    ctx.restore();
+  }
+
+  function drawDevices() {
+    const collidingIds = computeCollidingIds();
+    for (const dev of devices) {
+      const pos = effectiveGridPos(dev);
+      const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
+      drawDeviceRect(rect, dev, {
+        dragging: dev.id === draggingDeviceId,
+        colliding: collidingIds.has(dev.id),
+        selected: dev.id === selectedId
+      });
+    }
+  }
+
+  function drawSpawnPreview() {
+    if (!spawnPreview) return;
+    const rect = getDeviceRectWorld(spawnPreview.gridX, spawnPreview.gridY, spawnTemplate.w, spawnTemplate.h);
+
+    // 预览时也检测是否会与现有设备重叠
+    const rects = devices.map(d => {
+      const pos = effectiveGridPos(d);
+      return { id: d.id, gridX: pos.gridX, gridY: pos.gridY, w: d.w, h: d.h };
+    });
+    const previewRect = { gridX: spawnPreview.gridX, gridY: spawnPreview.gridY, w: spawnTemplate.w, h: spawnTemplate.h };
+    const wouldCollide = rects.some(r => rectsOverlap(r, previewRect));
+
+    const topLeft = worldToScreen(rect.x, rect.y);
+    const sw = rect.w * scale;
+    const sh = rect.h * scale;
+
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = wouldCollide ? '#ff1744' : spawnTemplate.color;
+    ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = wouldCollide ? '#ff1744' : spawnTemplate.borderColor;
+    ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function draw() {
+    drawGrid();
+    drawDevices();
+    drawSpawnPreview();
+  }
+
+  // ---- 画布内鼠标交互：平移 / 选中 / 拖拽已有设备 ----
+
+  canvas.addEventListener('mousedown', (e) => {
+    const worldPos = screenToWorld(e.clientX, e.clientY);
+    const hit = hitTestDevice(worldPos.x, worldPos.y);
+
+    if (hit) {
+      selectedId = hit.id;
+      draggingDeviceId = hit.id;
+      dragDeviceWX = hit.gridX * GRID_SIZE;
+      dragDeviceWY = hit.gridY * GRID_SIZE;
+      dragOffsetWX = worldPos.x - dragDeviceWX;
+      dragOffsetWY = worldPos.y - dragDeviceWY;
+      canvas.style.cursor = 'grabbing';
+    } else {
+      selectedId = null;
+      isPanning = true;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+      canvas.style.cursor = 'grabbing';
+    }
+    draw();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (draggingDeviceId !== null) {
+      const worldPos = screenToWorld(e.clientX, e.clientY);
+      const rawX = worldPos.x - dragOffsetWX;
+      const rawY = worldPos.y - dragOffsetWY;
+      dragDeviceWX = Math.round(rawX / GRID_SIZE) * GRID_SIZE;
+      dragDeviceWY = Math.round(rawY / GRID_SIZE) * GRID_SIZE;
+      draw();
+    } else if (isPanning) {
+      const dx = e.clientX - lastMouseX;
+      const dy = e.clientY - lastMouseY;
+      offsetX += dx;
+      offsetY += dy;
+      lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
+      draw();
+    } else if (!spawning) {
+      const worldPos = screenToWorld(e.clientX, e.clientY);
+      canvas.style.cursor = hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default';
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (draggingDeviceId !== null) {
+      const dev = devices.find(d => d.id === draggingDeviceId);
+      if (dev) {
+        dev.gridX = Math.round(dragDeviceWX / GRID_SIZE);
+        dev.gridY = Math.round(dragDeviceWY / GRID_SIZE);
+      }
+    }
+    draggingDeviceId = null;
+    isPanning = false;
+    canvas.style.cursor = 'default';
+    draw();
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const zoomIntensity = 0.1;
+    const direction = e.deltaY > 0 ? -1 : 1;
+    const factor = 1 + direction * zoomIntensity;
+    const newScale = Math.min(4, Math.max(0.2, scale * factor));
+    if (newScale === scale) return;
+
+    const worldPos = screenToWorld(e.clientX, e.clientY);
+    scale = newScale;
+    offsetX = e.clientX - worldPos.x * scale;
+    offsetY = e.clientY - worldPos.y * scale;
+    draw();
+  }, { passive: false });
+
+  // ---- 键盘删除 ----
+
+  window.addEventListener('keydown', (e) => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null) {
+      e.preventDefault();
+      devices = devices.filter(d => d.id !== selectedId);
+      selectedId = null;
+      draw();
+    }
+  });
+
+  // ---- 工具栏拖拽生成新设备 ----
+
+  function isPointInToolbar(x, y) {
+    const r = toolbar.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  crusherIcon.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    spawning = true;
+    ghostIcon.style.display = 'flex';
+    ghostIcon.style.left = (e.clientX - 28) + 'px';
+    ghostIcon.style.top = (e.clientY - 28) + 'px';
+    updateSpawnPreview(e.clientX, e.clientY);
+  });
+
+  function updateSpawnPreview(clientX, clientY) {
+    if (isPointInToolbar(clientX, clientY)) {
+      spawnPreview = null;
+      return;
+    }
+    const worldPos = screenToWorld(clientX, clientY);
+    const rawX = worldPos.x - (spawnTemplate.w * GRID_SIZE) / 2;
+    const rawY = worldPos.y - (spawnTemplate.h * GRID_SIZE) / 2;
+    spawnPreview = {
+      gridX: Math.round(rawX / GRID_SIZE),
+      gridY: Math.round(rawY / GRID_SIZE)
+    };
+  }
+
+  window.addEventListener('mousemove', (e) => {
+    if (!spawning) return;
+    ghostIcon.style.left = (e.clientX - 28) + 'px';
+    ghostIcon.style.top = (e.clientY - 28) + 'px';
+    updateSpawnPreview(e.clientX, e.clientY);
+    draw();
+  });
+
+  window.addEventListener('mouseup', (e) => {
+    if (!spawning) return;
+    spawning = false;
+    ghostIcon.style.display = 'none';
+
+    if (spawnPreview && !isPointInToolbar(e.clientX, e.clientY)) {
+      const newDevice = {
+        id: nextId++,
+        gridX: spawnPreview.gridX,
+        gridY: spawnPreview.gridY,
+        w: spawnTemplate.w,
+        h: spawnTemplate.h,
+        color: spawnTemplate.color,
+        borderColor: spawnTemplate.borderColor,
+        label: spawnTemplate.label
+      };
+      devices.push(newDevice);
+      selectedId = newDevice.id;
+    }
+    spawnPreview = null;
+    draw();
+  });
+
+  // 初始化
+  initView();
+  resize();
+})();
+</script>
+</body>
+</html>
