@@ -1,5 +1,5 @@
 // ---- 正交 A* 寻路(带转弯惩罚)、连线路径计算与命中测试 ----
-import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, PORT_HIT_RADIUS, BELT_WIDTH, PIPE_MERGER_COLOR, PIPE_SPLITTER_COLOR } from './constants.js';
+import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, WAYPOINT_HIT_RADIUS, BELT_WIDTH, PIPE_MERGER_COLOR, PIPE_SPLITTER_COLOR } from './constants.js';
 import { state } from './state.js';
 import { effectiveGridPos, getDevicePorts, oppositeDir } from './devices.js';
 import { worldToScreen } from './coords.js';
@@ -433,6 +433,19 @@ export function recomputeAllFlows() {
 
 // 在所有连线中查找经过 (col,row) 这一格的连线及其在该格的进入/离开方向，
 // 用于自动汇流(终点落在已有传送带上)和 Alt+点击生成分流器。
+// 判断 (col,row) 这一格是否正好是某条连线"悬空的自由端点"(fromCell 未接设备的
+// 源端，或 toCell 未接设备的目的端)——这类连线通常是画到空白格子的终点、或者
+// 设备被删除后残留下来的悬空段。用于在自由画线模式选起点时，允许直接从这个
+// 悬空端点继续延伸出新路径，而不是被"点在已有连线上"的一般规则挡住(那条规则
+// 是为了不让用户误在线路中段起手新线，只保留 Alt+点击生成分流器这一条路)。
+export function findDanglingFreeEndAtCell(col, row, network = BELT_NETWORK) {
+  for (const c of network.getConns()) {
+    if (c.fromDeviceId === null && c.fromCell && c.fromCell.col === col && c.fromCell.row === row) return true;
+    if (c.toDeviceId === null && c.toCell && c.toCell.col === col && c.toCell.row === row) return true;
+  }
+  return false;
+}
+
 export function findConnectionAtCell(col, row, network = BELT_NETWORK) {
   for (const c of network.getConns()) {
     if (!c.cellPath) continue;
@@ -550,7 +563,7 @@ export function hitTestWaypoint(clientX, clientY, network = BELT_NETWORK) {
       const wp = c.waypoints[i];
       const s = worldToScreen((wp.col + 0.5) * GRID_SIZE, (wp.row + 0.5) * GRID_SIZE);
       const dx = clientX - s.x, dy = clientY - s.y;
-      if (dx * dx + dy * dy <= PORT_HIT_RADIUS * PORT_HIT_RADIUS) return { connId: c.id, index: i };
+      if (dx * dx + dy * dy <= WAYPOINT_HIT_RADIUS * WAYPOINT_HIT_RADIUS) return { connId: c.id, index: i };
     }
   }
   return null;

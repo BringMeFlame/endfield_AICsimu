@@ -1,5 +1,5 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, BELT_RUNG_STEP, PIPE_RAIL_COLOR, PIPE_SURFACE_COLOR, PIPE_RAIL_SELECTED, PIPE_SURFACE_SELECTED, PIPE_ACCENT } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT } from './constants.js';
 import { state, ctx } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
@@ -129,48 +129,42 @@ function angleForDir(dir) {
   return dir * Math.PI / 2;
 }
 
-function drawPortMarker(p, type, deviceId, connected, flowDir) {
+// 极简风端口指示器：一个指向物料流动方向的实心箭头，不再是"圆点+内嵌箭头"。
+// 颜色只按端口类型区分——传送带口统一白色，管道口统一浅蓝色，方便一眼看出
+// 这个口能不能接管道；是否已连接不再单独换一种色相，而是用不透明度表达
+// (未连接半透明、已连接不透明)，避免在这么小的元素上叠加第三条颜色轴。
+function drawPortMarker(p, connected, flowDir) {
   const screen = worldToScreen(p.x, p.y);
-
-  let fill = type === 'input' ? '#42a5f5' : '#ffa726';
-  if (connected) fill = '#66bb6a';
+  const color = p.portKind === 'pipe' ? PIPE_PORT_COLOR : BELT_PORT_COLOR;
 
   ctx.save();
-  ctx.fillStyle = fill;
-  ctx.strokeStyle = '#111';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
-  // 方向箭头：指向该设备当前的物料流动方向(随旋转变化)
+  ctx.globalAlpha = connected ? 1 : 0.55;
   ctx.translate(screen.x, screen.y);
   ctx.rotate(angleForDir(flowDir));
-  ctx.fillStyle = '#111';
+  ctx.fillStyle = color;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(5, 0);
-  ctx.lineTo(-2, -4);
-  ctx.lineTo(-2, 4);
+  ctx.moveTo(9, 0);
+  ctx.lineTo(-6, -6);
+  ctx.lineTo(-6, 6);
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
   ctx.restore();
 }
 
 function drawDevicePorts(dev, pos) {
   const ports = getDevicePorts(dev, pos);
-  // 每个端口用自己的 dir 绘制箭头：钢体所有端口共用同一朝向，
-  // 汇流器/分流器上分布在不同边的端口则各自朝向不同。端口小圆点颜色(输入蓝/
-  // 输出橙/已连接绿)不按 portKind 再分一套，管道/传送带的视觉区分放在管道
-  // 本体颜色上；但"是否已连接"必须按 portKind 查对应网络，否则反应池的管道
-  // 口会永远查到传送带连线表、显示成"未连接"。
+  // "是否已连接"必须按 portKind 查对应网络，否则反应池的管道口会永远查到
+  // 传送带连线表、显示成"未连接"。
   for (const p of ports.inputs) {
     const connected = p.portKind === 'pipe' ? isPipeInputPortUsed(dev.id, p.index) : isInputPortUsed(dev.id, p.index);
-    drawPortMarker(p, 'input', dev.id, connected, p.dir);
+    drawPortMarker(p, connected, p.dir);
   }
   for (const p of ports.outputs) {
     const connected = p.portKind === 'pipe' ? isPipeOutputPortUsed(dev.id, p.index) : isOutputPortUsed(dev.id, p.index);
-    drawPortMarker(p, 'output', dev.id, connected, p.dir);
+    drawPortMarker(p, connected, p.dir);
   }
 }
 
@@ -185,91 +179,66 @@ function buildScreenPath2D(screenPoints) {
   return path;
 }
 
-// 沿折线绘制均匀分布的垂直刻线，模拟传送带辊轴纹理(拐弯处也保持等间距)
-function drawBeltRungs(screenPoints, color) {
-  const rungLen = BELT_WIDTH * 0.8;
+// 沿整条折线按固定间距(FLOW_ARROW_STEP)绘制小箭头表示流向，拐弯处也保持等
+// 间距(用 carry 累计跨线段的剩余距离)。极简风格下这是传送带/管道唯一的
+// 方向指示手段，替代旧版的辊轴刻线+单段箭头设计。
+function drawFlowArrowsAlongPath(screenPoints, color, size) {
   ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  let carry = BELT_RUNG_STEP / 2;
+  ctx.fillStyle = color;
+  let carry = FLOW_ARROW_STEP / 2;
   for (let i = 0; i < screenPoints.length - 1; i++) {
     const a = screenPoints[i], b = screenPoints[i + 1];
     const dx = b.x - a.x, dy = b.y - a.y;
     const len = Math.hypot(dx, dy);
     if (len < 1e-6) continue;
     const ux = dx / len, uy = dy / len;
-    const px = -uy, py = ux;
     let d = carry;
     while (d < len) {
       const cx = a.x + ux * d, cy = a.y + uy * d;
-      ctx.moveTo(cx + px * rungLen / 2, cy + py * rungLen / 2);
-      ctx.lineTo(cx - px * rungLen / 2, cy - py * rungLen / 2);
-      d += BELT_RUNG_STEP;
+      ctx.beginPath();
+      ctx.moveTo(cx + ux * size, cy + uy * size);
+      ctx.lineTo(cx - ux * size - uy * size * 0.6, cy - uy * size + ux * size * 0.6);
+      ctx.lineTo(cx - ux * size + uy * size * 0.6, cy - uy * size - ux * size * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      d += FLOW_ARROW_STEP;
     }
     carry = d - len;
   }
-  ctx.stroke();
   ctx.restore();
 }
 
-function drawFlowArrows(screenPoints) {
-  for (let i = 0; i < screenPoints.length - 1; i++) {
-    const a = screenPoints[i], b = screenPoints[i + 1];
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const len = Math.hypot(dx, dy);
-    if (len < 20) continue;
-    const ux = dx / len, uy = dy / len;
-    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    const size = 5;
-    ctx.save();
-    ctx.fillStyle = '#fff3e0';
-    ctx.beginPath();
-    ctx.moveTo(mx + ux * size, my + uy * size);
-    ctx.lineTo(mx - ux * size - uy * size * 0.6, my - uy * size + ux * size * 0.6);
-    ctx.lineTo(mx - ux * size + uy * size * 0.6, my - uy * size - ux * size * 0.6);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-// 传送带/管道渲染为一条带状：深色外框(轨道) + 主色表面 + 等距辊轴刻线 + 流向箭头。
-// opts.network('belt'默认|'pipe')只影响调色板，绘制手法(辊轴纹理+流向箭头)
-// 两者完全一致——管道沿用传送带的辊轴纹理绘制方式，只是整体换成蓝色调色板。
+// 传送带/管道渲染为极简风格：一条半透明色带/线条 + 沿途固定间距的小箭头指示
+// 方向，不再有辊轴刻线、双层描边等复杂细节。传送带是较宽(约一格 80% 宽度)的
+// 浅黄色条带，管道是明显更细的蓝灰色线条，两者都半透明，重叠时能互相透视看清。
 function drawConnectionPath(c, opts) {
   if (!c.points || c.points.length < 2) return;
   const screenPoints = pathToScreen(c.points);
   const path = buildScreenPath2D(screenPoints);
   const isPipe = opts.network === 'pipe';
+  const width = isPipe ? PIPE_WIDTH : BELT_WIDTH;
 
-  let railColor, surfaceColor;
   // 无效路径(拖拽途经点/设备到无法计算出直角路径的位置)：用半透明红色警示预览，
   // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带/管道。
-  if (c.invalid) { railColor = 'rgba(255, 23, 68, 0.35)'; surfaceColor = 'rgba(255, 23, 68, 0.55)'; }
-  else if (isPipe) { railColor = opts.selected ? PIPE_RAIL_SELECTED : PIPE_RAIL_COLOR; surfaceColor = opts.selected ? PIPE_SURFACE_SELECTED : PIPE_SURFACE_COLOR; }
-  else if (opts.selected) { railColor = '#8a6f00'; surfaceColor = '#ffeb3b'; }
-  else { railColor = '#5c3d12'; surfaceColor = '#ffa726'; }
+  let color;
+  if (c.invalid) color = 'rgba(255, 23, 68, 0.55)';
+  else if (isPipe) color = opts.selected ? PIPE_COLOR_SELECTED : PIPE_COLOR;
+  else color = opts.selected ? BELT_COLOR_SELECTED : BELT_COLOR;
 
   ctx.save();
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   if (c.invalid) ctx.setLineDash([10, 6]);
-
-  ctx.strokeStyle = railColor;
-  ctx.lineWidth = BELT_WIDTH;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
   ctx.stroke(path);
-
-  ctx.strokeStyle = surfaceColor;
-  ctx.lineWidth = BELT_WIDTH - 5;
-  ctx.stroke(path);
-
   ctx.setLineDash([]);
   ctx.restore();
 
   if (!c.invalid) {
-    drawBeltRungs(screenPoints, railColor);
-    drawFlowArrows(screenPoints);
+    const arrowColor = isPipe ? 'rgba(224, 247, 255, 0.95)' : 'rgba(93, 64, 4, 0.85)';
+    const arrowSize = isPipe ? 4 : 7;
+    drawFlowArrowsAlongPath(screenPoints, arrowColor, arrowSize);
   }
 }
 
@@ -283,13 +252,14 @@ function roundRectPathAt(x, y, w, h, r) {
   ctx.closePath();
 }
 
-// 物流桥：横向传送带贯穿桥面，纵向传送带从桥下的通道穿过，用于表示两条
-// 传送带在此正交交叉而非物理重叠。
-function drawLogisticsBridge(col, row, overColor) {
+// 物流桥：横向的一条贯穿桥面，纵向的一条从桥下的通道穿过，用于表示两条同网络
+// 连线在此正交交叉而非物理重叠。width 传对应网络的线宽(传送带 BELT_WIDTH 或
+// 管道 PIPE_WIDTH)，否则管道这种细线交叉会被套上按传送带宽度算出的巨大桥体。
+function drawLogisticsBridge(col, row, overColor, width) {
   const center = worldToScreen((col + 0.5) * GRID_SIZE, (row + 0.5) * GRID_SIZE);
-  const deckSize = BELT_WIDTH + 10;
+  const deckSize = width + 10;
   const half = deckSize / 2;
-  const tw = BELT_WIDTH - 5;
+  const tw = width - Math.min(5, width * 0.4);
 
   ctx.save();
   ctx.translate(center.x, center.y);
@@ -324,8 +294,8 @@ function drawConnections() {
     drawConnectionPath(c, { selected: c.id === state.selectedConnectionId });
   }
   for (const cr of computeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedConnectionId ? '#ffeb3b' : '#ffa726';
-    drawLogisticsBridge(cr.col, cr.row, overColor);
+    const overColor = cr.overConn.id === state.selectedConnectionId ? BELT_COLOR_SELECTED : BELT_COLOR;
+    drawLogisticsBridge(cr.col, cr.row, overColor, BELT_WIDTH);
   }
 }
 
@@ -337,8 +307,8 @@ function drawPipeConnections() {
     drawConnectionPath(c, { selected: c.id === state.selectedPipeConnectionId, network: 'pipe' });
   }
   for (const cr of computePipeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedPipeConnectionId ? PIPE_SURFACE_SELECTED : PIPE_SURFACE_COLOR;
-    drawLogisticsBridge(cr.col, cr.row, overColor);
+    const overColor = cr.overConn.id === state.selectedPipeConnectionId ? PIPE_COLOR_SELECTED : PIPE_COLOR;
+    drawLogisticsBridge(cr.col, cr.row, overColor, PIPE_WIDTH);
   }
 }
 

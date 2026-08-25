@@ -1,5 +1,5 @@
 // ---- 设备数据模型、端口计算、碰撞检测 ----
-import { GRID_SIZE, PORT_COUNT, PORT_HIT_RADIUS, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, REACTOR_PORT_LAYOUT, REACTOR_BASE_ROLES } from './constants.js';
+import { GRID_SIZE, PORT_COUNT, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, REACTOR_PORT_LAYOUT, REACTOR_BASE_ROLES } from './constants.js';
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 
@@ -194,7 +194,16 @@ export function getDevicePorts(dev, pos) {
   };
 }
 
+// 端口拾取判定半径：放大到该端口所在的整个网格格子(直径一格，即半径为半格)，
+// 而不是过去固定的 8px 小圆——端口视觉尺寸很小，精确点选很容易点空，放大判定
+// 区域大幅提升可用性。半径要随当前缩放等比例换算成屏幕像素，否则缩小视图时
+// 判定区域会显得过大、放大视图时又显得过小。
+function portHitRadiusPx() {
+  return (GRID_SIZE * state.scale) / 2;
+}
+
 export function findPortAt(clientX, clientY, portType, portKind = 'belt') {
+  const radius = portHitRadiusPx();
   for (let i = state.devices.length - 1; i >= 0; i--) {
     const dev = state.devices[i];
     const pos = effectiveGridPos(dev);
@@ -203,7 +212,7 @@ export function findPortAt(clientX, clientY, portType, portKind = 'belt') {
     for (const p of list) {
       const s = worldToScreen(p.x, p.y);
       const dx = clientX - s.x, dy = clientY - s.y;
-      if (dx * dx + dy * dy <= PORT_HIT_RADIUS * PORT_HIT_RADIUS) {
+      if (dx * dx + dy * dy <= radius * radius) {
         return { deviceId: dev.id, index: p.index, x: p.x, y: p.y, cellCol: p.cellCol, cellRow: p.cellRow };
       }
     }
