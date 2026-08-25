@@ -345,10 +345,53 @@
     return set;
   }
 
+  function orientationOf(dir) {
+    return (dir === DIR_E || dir === DIR_W) ? 'H' : 'V';
+  }
+
+  // 相邻格 a -> b 的移动方向
+  function dirBetween(a, b) {
+    if (b.col === a.col + 1) return DIR_E;
+    if (b.col === a.col - 1) return DIR_W;
+    if (b.row === a.row + 1) return DIR_S;
+    return DIR_N;
+  }
+
+  // 给定一条连线的格子路径，得到它经过每个格子时使用的朝向('H'/'V')。
+  // 起点视为从端口沿 +x 方向进入，终点视为沿 +x 方向进入端口。
+  function cellOrientationsOf(cellPath) {
+    const list = [];
+    for (let i = 0; i < cellPath.length; i++) {
+      const entryDir = i === 0 ? DIR_E : dirBetween(cellPath[i - 1], cellPath[i]);
+      const exitDir = i === cellPath.length - 1 ? DIR_E : dirBetween(cellPath[i], cellPath[i + 1]);
+      list.push({ cell: cellPath[i], entryDir, exitDir });
+    }
+    return list;
+  }
+
+  // 汇总其它传送带占用的格子及朝向，用于新路径的"不可重叠、但允许交叉"约束。
+  // excludeConnId 用于在重新计算某条连线自身路径时，排除它自己之前占用的格子。
+  function buildBeltOccupancy(excludeConnId) {
+    const map = new Map();
+    for (const c of connections) {
+      if (c.id === excludeConnId || !c.cellPath) continue;
+      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath)) {
+        const key = cell.col + ',' + cell.row;
+        let set = map.get(key);
+        if (!set) { set = new Set(); map.set(key, set); }
+        set.add(orientationOf(entryDir));
+        set.add(orientationOf(exitDir));
+      }
+    }
+    return map;
+  }
+
   // 状态空间为 (col, row, dir)：dir 表示到达该格时的移动方向，用于计算转弯惩罚。
   // 起点视为"刚从输出口沿 +x 方向进入格子"，终点要求"沿 +x 方向进入格子"才算到达输入口，
   // 这样生成的路径两端总是与设备边缘垂直、笔直地接入端口。
-  function aStarOrthogonal(startCol, startRow, goalCol, goalRow, blocked) {
+  // beltOccupancy 记录其它传送带占用的格子及朝向：同朝向直行视为重叠(禁止)，
+  // 仅垂直方向穿过视为合法交叉(允许，渲染时生成物流桥)；已被占用的格子内不允许转弯。
+  function aStarOrthogonal(startCol, startRow, goalCol, goalRow, blocked, beltOccupancy) {
     if (startCol === goalCol && startRow === goalRow) {
       return [{ col: startCol, row: startRow }];
     }
@@ -389,6 +432,17 @@
           if (nc < minC || nc > maxC || nr < minR || nr > maxR) continue;
           if (blocked.has(nc + ',' + nr)) continue;
           const turn = d === node.dir ? 0 : 1;
+
+          if (turn) {
+            // 转弯必须发生在没有其它传送带占用的格子，避免拐角与既有带体重叠
+            const curOcc = beltOccupancy.get(node.col + ',' + node.row);
+            if (curOcc && curOcc.size > 0) continue;
+          } else {
+            // 直行：目标格若已被同朝向占用视为重叠，禁止；仅被垂直朝向占用则视为合法交叉
+            const nOcc = beltOccupancy.get(nc + ',' + nr);
+            if (nOcc && nOcc.has(orientationOf(d))) continue;
+          }
+
           const stepCost = 1 + turn * TURN_PENALTY;
           const ng = gScore.get(node.key) + stepCost;
           const nkey = nc + ',' + nr + ',' + d;
@@ -430,22 +484,25 @@
     return out;
   }
 
-  // 计算一条连线从输出口到输入口的最佳直角路径
+  // 计算一条连线从输出口到输入口的最佳直角路径。
+  // 传送带之间不允许重叠，但允许十字交叉(交叉处渲染物流桥)，因此需要排除
+  // 该连线自身之前占用的格子后，再依据其它连线的占用情况进行寻路。
   function computePath(conn) {
     const fromDev = devices.find(d => d.id === conn.fromDeviceId);
     const toDev = devices.find(d => d.id === conn.toDeviceId);
-    if (!fromDev || !toDev) return { points: [], invalid: true };
+    if (!fromDev || !toDev) return { points: [], cellPath: null, invalid: true };
 
     const fromPos = effectiveGridPos(fromDev);
     const toPos = effectiveGridPos(toDev);
     const startPort = getDevicePorts(fromDev, fromPos).outputs[conn.fromPort];
     const endPort = getDevicePorts(toDev, toPos).inputs[conn.toPort];
-    if (!startPort || !endPort) return { points: [], invalid: true };
+    if (!startPort || !endPort) return { points: [], cellPath: null, invalid: true };
 
     const blocked = buildBlockedSet();
-    const cellPath = aStarOrthogonal(startPort.cellCol, startPort.cellRow, endPort.cellCol, endPort.cellRow, blocked);
+    const beltOccupancy = buildBeltOccupancy(conn.id);
+    const cellPath = aStarOrthogonal(startPort.cellCol, startPort.cellRow, endPort.cellCol, endPort.cellRow, blocked, beltOccupancy);
     if (!cellPath) {
-      return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], invalid: true };
+      return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, invalid: true };
     }
 
     const pts = [{ x: startPort.x, y: startPort.y }];
@@ -454,7 +511,7 @@
     }
     pts.push({ x: endPort.x, y: endPort.y });
 
-    return { points: simplifyCollinear(dedupePoints(pts)), invalid: false };
+    return { points: simplifyCollinear(dedupePoints(pts)), cellPath, invalid: false };
   }
 
   // 设备布局发生任何变化(拖动/新增/删除)都可能影响其他连线的最佳绕行路径，
@@ -463,8 +520,35 @@
     for (const c of connections) {
       const res = computePath(c);
       c.points = res.points;
+      c.cellPath = res.cellPath;
       c.invalid = res.invalid;
     }
+  }
+
+  // 找出所有传送带的合法交叉点(一条水平直行 + 一条垂直直行共用同一格)，
+  // 用于在绘制时生成物流桥。约定：水平方向的传送带走"桥面"，垂直方向的走"桥下"。
+  function computeCrossings() {
+    const cellMap = new Map();
+    for (const c of connections) {
+      if (!c.cellPath) continue;
+      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath)) {
+        if (entryDir !== exitDir) continue; // 拐弯格不可能与其它传送带共用，跳过
+        const key = cell.col + ',' + cell.row;
+        let arr = cellMap.get(key);
+        if (!arr) { arr = []; cellMap.set(key, arr); }
+        arr.push({ conn: c, orientation: orientationOf(entryDir) });
+      }
+    }
+    const crossings = [];
+    for (const [key, arr] of cellMap) {
+      const h = arr.find(e => e.orientation === 'H');
+      const v = arr.find(e => e.orientation === 'V');
+      if (h && v) {
+        const [col, row] = key.split(',').map(Number);
+        crossings.push({ col, row, overConn: h.conn });
+      }
+    }
+    return crossings;
   }
 
   function distPointToSegment(px, py, ax, ay, bx, by) {
@@ -733,9 +817,59 @@
     }
   }
 
+  function roundRectPathAt(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // 物流桥：横向传送带贯穿桥面，纵向传送带从桥下的通道穿过，用于表示两条
+  // 传送带在此正交交叉而非物理重叠。
+  function drawLogisticsBridge(col, row, overColor) {
+    const center = worldToScreen((col + 0.5) * GRID_SIZE, (row + 0.5) * GRID_SIZE);
+    const deckSize = BELT_WIDTH + 10;
+    const half = deckSize / 2;
+    const tw = BELT_WIDTH - 5;
+
+    ctx.save();
+    ctx.translate(center.x, center.y);
+
+    ctx.fillStyle = '#374151';
+    roundRectPathAt(-half, -half, deckSize, deckSize, 4);
+    ctx.fill();
+
+    ctx.fillStyle = '#8b95a1';
+    roundRectPathAt(-half + 2, -half + 2, deckSize - 4, deckSize - 4, 3);
+    ctx.fill();
+
+    // 桥下(纵向传送带)的通道口
+    ctx.fillStyle = '#20242b';
+    ctx.fillRect(-tw / 2, -half, tw, 3);
+    ctx.fillRect(-tw / 2, half - 3, tw, 3);
+
+    // 桥面(横向传送带)贯穿而过
+    ctx.strokeStyle = overColor;
+    ctx.lineWidth = tw;
+    ctx.lineCap = 'butt';
+    ctx.beginPath();
+    ctx.moveTo(-half, 0);
+    ctx.lineTo(half, 0);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
   function drawConnections() {
     for (const c of connections) {
       drawConnectionPath(c, { selected: c.id === selectedConnectionId });
+    }
+    for (const cr of computeCrossings()) {
+      const overColor = cr.overConn.id === selectedConnectionId ? '#ffeb3b' : '#ffa726';
+      drawLogisticsBridge(cr.col, cr.row, overColor);
     }
   }
 
@@ -886,10 +1020,12 @@
           toDeviceId: target.deviceId,
           toPort: target.index,
           points: [],
+          cellPath: null,
           invalid: false
         };
         const res = computePath(conn);
         conn.points = res.points;
+        conn.cellPath = res.cellPath;
         conn.invalid = res.invalid;
         connections.push(conn);
         selectedConnectionId = conn.id;
