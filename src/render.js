@@ -1,9 +1,9 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, BELT_RUNG_STEP } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, BELT_RUNG_STEP, PIPE_RAIL_COLOR, PIPE_SURFACE_COLOR, PIPE_RAIL_SELECTED, PIPE_SURFACE_SELECTED, PIPE_ACCENT } from './constants.js';
 import { state, ctx } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, rectsOverlap, spawnTemplate } from './devices.js';
-import { computeCrossings } from './pathfinding.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
+import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 
 function drawGrid() {
   const w = window.innerWidth;
@@ -86,6 +86,13 @@ function drawDeviceRect(rect, dev, opts) {
     ctx.strokeRect(topLeft.x - 2, topLeft.y - 2, sw + 4, sh + 4);
   }
 
+  // 自由管道模式下悬停在设备本体上，镜像上面的传送带版，改用管道强调色
+  if (opts.freePipeHover) {
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = PIPE_ACCENT;
+    ctx.strokeRect(topLeft.x - 2, topLeft.y - 2, sw + 4, sh + 4);
+  }
+
   // 标签
   if (sw > 24 && sh > 16) {
     ctx.globalAlpha = 1;
@@ -106,9 +113,12 @@ function drawDevices() {
     const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
     drawDeviceRect(rect, dev, {
       dragging: dev.id === state.draggingDeviceId,
-      colliding: collidingIds.has(dev.id),
+      // 地面冲突警示(管道分流器/汇流器落在已有传送带地面格上)复用同一套红色
+      // 重叠警示，见 interactions.js 里 groundConflict 的说明。
+      colliding: collidingIds.has(dev.id) || dev.groundConflict === true,
       selected: dev.id === state.selectedId,
-      freeBeltHover: dev.id === state.freeBeltHoverDeviceId
+      freeBeltHover: dev.id === state.freeBeltHoverDeviceId,
+      freePipeHover: dev.id === state.freePipeHoverDeviceId
     });
     drawDevicePorts(dev, pos);
   }
@@ -150,9 +160,18 @@ function drawPortMarker(p, type, deviceId, connected, flowDir) {
 function drawDevicePorts(dev, pos) {
   const ports = getDevicePorts(dev, pos);
   // 每个端口用自己的 dir 绘制箭头：钢体所有端口共用同一朝向，
-  // 汇流器/分流器上分布在不同边的端口则各自朝向不同。
-  for (const p of ports.inputs) drawPortMarker(p, 'input', dev.id, isInputPortUsed(dev.id, p.index), p.dir);
-  for (const p of ports.outputs) drawPortMarker(p, 'output', dev.id, isOutputPortUsed(dev.id, p.index), p.dir);
+  // 汇流器/分流器上分布在不同边的端口则各自朝向不同。端口小圆点颜色(输入蓝/
+  // 输出橙/已连接绿)不按 portKind 再分一套，管道/传送带的视觉区分放在管道
+  // 本体颜色上；但"是否已连接"必须按 portKind 查对应网络，否则反应池的管道
+  // 口会永远查到传送带连线表、显示成"未连接"。
+  for (const p of ports.inputs) {
+    const connected = p.portKind === 'pipe' ? isPipeInputPortUsed(dev.id, p.index) : isInputPortUsed(dev.id, p.index);
+    drawPortMarker(p, 'input', dev.id, connected, p.dir);
+  }
+  for (const p of ports.outputs) {
+    const connected = p.portKind === 'pipe' ? isPipeOutputPortUsed(dev.id, p.index) : isOutputPortUsed(dev.id, p.index);
+    drawPortMarker(p, 'output', dev.id, connected, p.dir);
+  }
 }
 
 function pathToScreen(points) {
@@ -215,16 +234,20 @@ function drawFlowArrows(screenPoints) {
   }
 }
 
-// 传送带渲染为一条带状：深色外框(轨道) + 主色表面 + 等距辊轴刻线 + 流向箭头
+// 传送带/管道渲染为一条带状：深色外框(轨道) + 主色表面 + 等距辊轴刻线 + 流向箭头。
+// opts.network('belt'默认|'pipe')只影响调色板，绘制手法(辊轴纹理+流向箭头)
+// 两者完全一致——管道沿用传送带的辊轴纹理绘制方式，只是整体换成蓝色调色板。
 function drawConnectionPath(c, opts) {
   if (!c.points || c.points.length < 2) return;
   const screenPoints = pathToScreen(c.points);
   const path = buildScreenPath2D(screenPoints);
+  const isPipe = opts.network === 'pipe';
 
   let railColor, surfaceColor;
   // 无效路径(拖拽途经点/设备到无法计算出直角路径的位置)：用半透明红色警示预览，
-  // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带。
+  // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带/管道。
   if (c.invalid) { railColor = 'rgba(255, 23, 68, 0.35)'; surfaceColor = 'rgba(255, 23, 68, 0.55)'; }
+  else if (isPipe) { railColor = opts.selected ? PIPE_RAIL_SELECTED : PIPE_RAIL_COLOR; surfaceColor = opts.selected ? PIPE_SURFACE_SELECTED : PIPE_SURFACE_COLOR; }
   else if (opts.selected) { railColor = '#8a6f00'; surfaceColor = '#ffeb3b'; }
   else { railColor = '#5c3d12'; surfaceColor = '#ffa726'; }
 
@@ -306,6 +329,19 @@ function drawConnections() {
   }
 }
 
+// 管道渲染逐字镜像上面的 drawConnections，只是数据源换成 state.pipeConnections、
+// 调色板换成管道蓝色系；物流桥复用同一个 drawLogisticsBridge，只是传入蓝色
+// overColor，不需要新的桥体绘制代码。
+function drawPipeConnections() {
+  for (const c of state.pipeConnections) {
+    drawConnectionPath(c, { selected: c.id === state.selectedPipeConnectionId, network: 'pipe' });
+  }
+  for (const cr of computePipeCrossings()) {
+    const overColor = cr.overConn.id === state.selectedPipeConnectionId ? PIPE_SURFACE_SELECTED : PIPE_SURFACE_COLOR;
+    drawLogisticsBridge(cr.col, cr.row, overColor);
+  }
+}
+
 // 手动途经点：菱形手柄，可拖拽移动、双击删除，用于自由调整传送带走向
 function drawWaypointHandle(wp, dragging) {
   const screen = worldToScreen((wp.col + 0.5) * GRID_SIZE, (wp.row + 0.5) * GRID_SIZE);
@@ -335,6 +371,18 @@ function drawWaypoints() {
   }
 }
 
+// 逐字镜像上面的 drawWaypoints，数据源换成管道连线；菱形手柄颜色不按网络区分，
+// 靠位置本身消歧即可。
+function drawPipeWaypoints() {
+  for (const c of state.pipeConnections) {
+    if (!c.waypoints) continue;
+    for (let i = 0; i < c.waypoints.length; i++) {
+      const dragging = !!(state.draggingPipeWaypoint && state.draggingPipeWaypoint.connId === c.id && state.draggingPipeWaypoint.index === i);
+      drawWaypointHandle(c.waypoints[i], dragging);
+    }
+  }
+}
+
 // 自由传送带模式下"起点 A → 当前悬停格"的实时 A* 预览路径(虚线折线)
 function drawFreeBeltPreview() {
   if (!state.freeBeltMode || !state.freeBeltPreviewPts || state.freeBeltPreviewPts.length < 2) return;
@@ -356,16 +404,40 @@ function drawFreeBeltPreview() {
   ctx.restore();
 }
 
+// 自由管道模式下"起点 A → 当前悬停格"的实时预览，镜像 drawFreeBeltPreview，
+// 改用管道强调色。
+function drawFreePipePreview() {
+  if (!state.freePipeMode || !state.freePipePreviewPts || state.freePipePreviewPts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = PIPE_ACCENT;
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  const p0 = worldToScreen(state.freePipePreviewPts[0].x, state.freePipePreviewPts[0].y);
+  ctx.moveTo(p0.x, p0.y);
+  for (let i = 1; i < state.freePipePreviewPts.length; i++) {
+    const p = worldToScreen(state.freePipePreviewPts[i].x, state.freePipePreviewPts[i].y);
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 function drawSpawnPreview() {
-  if (!state.spawnPreview) return;
-  const rect = getDeviceRectWorld(state.spawnPreview.gridX, state.spawnPreview.gridY, spawnTemplate.w, spawnTemplate.h);
+  if (!state.spawnPreview || !state.spawningTemplateKey) return;
+  const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
+  if (!template) return;
+  const rect = getDeviceRectWorld(state.spawnPreview.gridX, state.spawnPreview.gridY, template.w, template.h);
 
   // 预览时也检测是否会与现有设备重叠
   const rects = state.devices.map(d => {
     const pos = effectiveGridPos(d);
     return { id: d.id, gridX: pos.gridX, gridY: pos.gridY, w: d.w, h: d.h };
   });
-  const previewRect = { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: spawnTemplate.w, h: spawnTemplate.h };
+  const previewRect = { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: template.w, h: template.h };
   const wouldCollide = rects.some(r => rectsOverlap(r, previewRect));
 
   const topLeft = worldToScreen(rect.x, rect.y);
@@ -374,11 +446,11 @@ function drawSpawnPreview() {
 
   ctx.save();
   ctx.globalAlpha = 0.5;
-  ctx.fillStyle = wouldCollide ? '#ff1744' : spawnTemplate.color;
+  ctx.fillStyle = wouldCollide ? '#ff1744' : template.color;
   ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
   ctx.lineWidth = 2;
   ctx.setLineDash([6, 4]);
-  ctx.strokeStyle = wouldCollide ? '#ff1744' : spawnTemplate.borderColor;
+  ctx.strokeStyle = wouldCollide ? '#ff1744' : template.borderColor;
   ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
   ctx.setLineDash([]);
   ctx.restore();
@@ -409,10 +481,13 @@ function drawCursorTooltip() {
 
 export function draw() {
   drawGrid();
-  drawConnections();
-  drawDevices();
+  drawConnections();      // 传送带 + 传送带物流桥
+  drawDevices();          // 设备遮住传送带(不变)
   drawWaypoints();
+  drawPipeConnections();  // 管道 + 管道物流桥 —— 画在设备之上，呼应"空中单位"语义
+  drawPipeWaypoints();
   drawSpawnPreview();
   drawFreeBeltPreview();
+  drawFreePipePreview();
   drawCursorTooltip();
 }

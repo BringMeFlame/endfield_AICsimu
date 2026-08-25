@@ -1,8 +1,29 @@
 // ---- 正交 A* 寻路(带转弯惩罚)、连线路径计算与命中测试 ----
-import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, PORT_HIT_RADIUS, BELT_WIDTH } from './constants.js';
+import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, PORT_HIT_RADIUS, BELT_WIDTH, PIPE_MERGER_COLOR, PIPE_SPLITTER_COLOR } from './constants.js';
 import { state } from './state.js';
 import { effectiveGridPos, getDevicePorts, oppositeDir } from './devices.js';
 import { worldToScreen } from './coords.js';
+
+// ---- 网络描述符：传送带/管道是两套平行的连线网络，共享同一套寻路/命中测试/
+// 撤销安全检查算法。所有原本硬编码操作 state.connections 的函数都改成接受一个
+// 可选的 network 参数(默认传送带)，通过 network.getConns()/setConns()/nextId()/
+// buildOccupancy() 间接读写，做到零分叉复用同一份算法。管道分流器/汇流器等
+// "节点"设备仍然放进共享的 state.devices(不属于任何网络)，这样它们能天然
+// 参与 buildBlockedSet()/computeCollidingIds()，见 devices.js 相关注释。
+export const BELT_NETWORK = {
+  kind: 'belt',
+  getConns: () => state.connections,
+  setConns: (arr) => { state.connections = arr; },
+  nextId: () => state.nextConnId++,
+  buildOccupancy: (excludeConnId) => buildBeltOccupancy(excludeConnId),
+};
+export const PIPE_NETWORK = {
+  kind: 'pipe',
+  getConns: () => state.pipeConnections,
+  setConns: (arr) => { state.pipeConnections = arr; },
+  nextId: () => state.nextPipeConnId++,
+  buildOccupancy: (excludeConnId) => buildPipeOccupancy(excludeConnId),
+};
 
 class MinHeap {
   constructor() { this.items = []; }
@@ -81,11 +102,13 @@ export function cellOrientationsOf(cellPath, startDir, goalDir) {
   return list;
 }
 
-// 汇总其它传送带占用的格子及朝向，用于新路径的"不可重叠、但允许交叉"约束。
-// excludeConnId 用于在重新计算某条连线自身路径时，排除它自己之前占用的格子。
-export function buildBeltOccupancy(excludeConnId) {
+// 汇总某个网络内其它连线占用的格子及朝向，用于新路径的"不可重叠、但允许交叉"
+// 约束。excludeConnId 用于在重新计算某条连线自身路径时，排除它自己之前占用的
+// 格子。传送带和管道各自只与同网络内的其它连线比较占用——管道是空中单位，
+// 可以自由与传送带同格重叠/交叉，因此两个网络的占用集合完全独立维护。
+function buildOccupancyFor(conns, excludeConnId) {
   const map = new Map();
-  for (const c of state.connections) {
+  for (const c of conns) {
     if (c.id === excludeConnId || !c.cellPath) continue;
     for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath, c.startDir, c.goalDir)) {
       const key = cell.col + ',' + cell.row;
@@ -97,6 +120,8 @@ export function buildBeltOccupancy(excludeConnId) {
   }
   return map;
 }
+export function buildBeltOccupancy(excludeConnId) { return buildOccupancyFor(state.connections, excludeConnId); }
+export function buildPipeOccupancy(excludeConnId) { return buildOccupancyFor(state.pipeConnections, excludeConnId); }
 
 // 状态空间为 (col, row, dir)：dir 表示到达该格时的移动方向，用于计算转弯惩罚。
 // startDir 是进入起点格时视为的移动方向(用于计算第一步是否转弯)，为 null 表示
@@ -320,7 +345,7 @@ export function pickNearestPortByDistance(candidates, refCol, refRow) {
 // 的每一段分别寻路再首尾相接，途经点之间的转向不做方向限制，只有最终进入
 // 终点那一段仍遵循终点自身的方向要求，从而让用户能强制路线绕开某片区域、
 // 自由摆造型，同时仍复用同一套避障/转弯惩罚/不重叠规则。
-export function computePath(conn) {
+export function computePath(conn, network = BELT_NETWORK) {
   const startPort = resolveConnEndpoint(conn.fromDeviceId, conn.fromPort, conn.fromCell, true);
   const endPort = resolveConnEndpoint(conn.toDeviceId, conn.toPort, conn.toCell, false);
   if (!startPort || !endPort) return { points: [], cellPath: null, startDir: null, goalDir: null, invalid: true };
@@ -329,7 +354,7 @@ export function computePath(conn) {
   const goalDir = endPort.dir;
 
   const blocked = buildBlockedSet();
-  const beltOccupancy = buildBeltOccupancy(conn.id);
+  const occupancy = network.buildOccupancy(conn.id);
 
   const checkpoints = [
     { col: startPort.cellCol, row: startPort.cellRow },
@@ -351,7 +376,7 @@ export function computePath(conn) {
   for (let i = 0; i < checkpoints.length - 1; i++) {
     const a = checkpoints[i], b = checkpoints[i + 1];
     const hopGoalDir = i === checkpoints.length - 2 ? goalDir : null;
-    let hopPath = aStarWithDockingFallback(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
+    let hopPath = aStarWithDockingFallback(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, occupancy);
     if (!hopPath) { fullCellPath = null; break; }
     hopPath = removeSelfOverlap(hopPath);
     fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));
@@ -385,9 +410,9 @@ export function computePath(conn) {
 
 // 设备布局发生任何变化(拖动/新增/删除)都可能影响其他连线的最佳绕行路径，
 // 因此统一重新计算全部连线，而不仅是与该设备直接相连的连线。
-export function recomputeAllConnections() {
-  for (const c of state.connections) {
-    const res = computePath(c);
+function recomputeAllForNetwork(network) {
+  for (const c of network.getConns()) {
+    const res = computePath(c, network);
     c.points = res.points;
     c.cellPath = res.cellPath;
     c.startDir = res.startDir;
@@ -395,11 +420,21 @@ export function recomputeAllConnections() {
     c.invalid = res.invalid;
   }
 }
+export function recomputeAllConnections() { recomputeAllForNetwork(BELT_NETWORK); }
+export function recomputeAllPipeConnections() { recomputeAllForNetwork(PIPE_NETWORK); }
+// 只有触碰 state.devices 的操作(生成/移动/删除/旋转设备、插入分流器/汇流器
+// 节点)才可能同时影响两个网络的路径(见文件顶部 BELT_NETWORK/PIPE_NETWORK 注释)，
+// 这类操作统一调用这个组合函数；纯粹的连线拓扑编辑(拖途经点/改接端点/画新线)
+// 只需要重算自己所在的那个网络。
+export function recomputeAllFlows() {
+  recomputeAllConnections();
+  recomputeAllPipeConnections();
+}
 
 // 在所有连线中查找经过 (col,row) 这一格的连线及其在该格的进入/离开方向，
 // 用于自动汇流(终点落在已有传送带上)和 Alt+点击生成分流器。
-export function findConnectionAtCell(col, row) {
-  for (const c of state.connections) {
+export function findConnectionAtCell(col, row, network = BELT_NETWORK) {
+  for (const c of network.getConns()) {
     if (!c.cellPath) continue;
     for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath, c.startDir, c.goalDir)) {
       if (cell.col === col && cell.row === row) return { conn: c, entryDir, exitDir };
@@ -413,7 +448,10 @@ export function findConnectionAtCell(col, row) {
 // mainInEdge=oppositeDir(entryDir)、mainOutEdge=exitDir 两条边(原流向保持不变)，
 // 其余边留给新的合流/分流分支使用(汇流器多出 2 个空闲输入边，分流器多出 2 个
 // 空闲输出边，天然满足"3 进 1 出"/"1 进 3 出"的容量上限)。
-export function splitConnectionAtCell(hostConn, cell, entryDir, exitDir, kind) {
+const NODE_COLOR = { merger: '#ffd54f', splitter: '#4fc3f7', 'pipe-merger': PIPE_MERGER_COLOR, 'pipe-splitter': PIPE_SPLITTER_COLOR };
+const NODE_LABEL = { merger: '汇', splitter: '分', 'pipe-merger': '汇', 'pipe-splitter': '分' };
+
+export function splitConnectionAtCell(hostConn, cell, entryDir, exitDir, kind, network = BELT_NETWORK) {
   const mainInEdge = oppositeDir(entryDir);
   const mainOutEdge = exitDir;
   const node = {
@@ -421,36 +459,39 @@ export function splitConnectionAtCell(hostConn, cell, entryDir, exitDir, kind) {
     kind,
     gridX: cell.col, gridY: cell.row, w: 1, h: 1,
     mainInEdge, mainOutEdge,
-    color: kind === 'merger' ? '#ffd54f' : '#4fc3f7',
+    color: NODE_COLOR[kind],
     borderColor: '#111',
-    label: kind === 'merger' ? '汇' : '分'
+    label: NODE_LABEL[kind]
   };
   state.devices.push(node);
 
   const connA = {
-    id: state.nextConnId++,
+    id: network.nextId(),
     fromDeviceId: hostConn.fromDeviceId, fromPort: hostConn.fromPort, fromCell: hostConn.fromCell,
     toDeviceId: node.id, toPort: mainInEdge, toCell: null,
     waypoints: [], points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
   };
   const connB = {
-    id: state.nextConnId++,
+    id: network.nextId(),
     fromDeviceId: node.id, fromPort: mainOutEdge, fromCell: null,
     toDeviceId: hostConn.toDeviceId, toPort: hostConn.toPort, toCell: hostConn.toCell,
     waypoints: [], points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
   };
 
-  state.connections = state.connections.filter(c => c.id !== hostConn.id);
-  state.connections.push(connA, connB);
-  recomputeAllConnections();
+  network.setConns(network.getConns().filter(c => c.id !== hostConn.id));
+  network.getConns().push(connA, connB);
+  // 插入节点往 state.devices 里放了一个新设备，可能同时影响另一个网络的路径
+  // (比如管道分流器占的地面格恰好挡住一条传送带)，因此这里统一重算两个网络，
+  // 而不只是重算 network 自己。
+  recomputeAllFlows();
   return node;
 }
 
 // 找出所有传送带的合法交叉点(一条水平直行 + 一条垂直直行共用同一格)，
 // 用于在绘制时生成物流桥。约定：水平方向的传送带走"桥面"，垂直方向的走"桥下"。
-export function computeCrossings() {
+export function computeCrossings(network = BELT_NETWORK) {
   const cellMap = new Map();
-  for (const c of state.connections) {
+  for (const c of network.getConns()) {
     if (!c.cellPath) continue;
     for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath, c.startDir, c.goalDir)) {
       if (entryDir !== exitDir) continue; // 拐弯格不可能与其它传送带共用，跳过
@@ -471,6 +512,7 @@ export function computeCrossings() {
   }
   return crossings;
 }
+export function computePipeCrossings() { return computeCrossings(PIPE_NETWORK); }
 
 function distPointToSegment(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
@@ -483,10 +525,11 @@ function distPointToSegment(px, py, ax, ay, bx, by) {
 
 // 返回 { conn, segmentIndex }：segmentIndex 是命中的 conn.points[j]-conn.points[j+1] 线段下标，
 // 供手动拖拽新增途经点时判断插入顺序。
-export function hitTestConnection(clientX, clientY) {
+export function hitTestConnection(clientX, clientY, network = BELT_NETWORK) {
   const THRESH = BELT_WIDTH / 2 + 2;
-  for (let i = state.connections.length - 1; i >= 0; i--) {
-    const c = state.connections[i];
+  const conns = network.getConns();
+  for (let i = conns.length - 1; i >= 0; i--) {
+    const c = conns[i];
     if (!c.points || c.points.length < 2) continue;
     for (let j = 0; j < c.points.length - 1; j++) {
       const a = worldToScreen(c.points[j].x, c.points[j].y);
@@ -496,11 +539,12 @@ export function hitTestConnection(clientX, clientY) {
   }
   return null;
 }
+export function hitTestPipeConnection(clientX, clientY) { return hitTestConnection(clientX, clientY, PIPE_NETWORK); }
 
 // ---- 手动途经点(拖拽调整传送带路径) ----
 
-export function hitTestWaypoint(clientX, clientY) {
-  for (const c of state.connections) {
+export function hitTestWaypoint(clientX, clientY, network = BELT_NETWORK) {
+  for (const c of network.getConns()) {
     if (!c.waypoints) continue;
     for (let i = 0; i < c.waypoints.length; i++) {
       const wp = c.waypoints[i];
@@ -511,6 +555,8 @@ export function hitTestWaypoint(clientX, clientY) {
   }
   return null;
 }
+export function hitTestPipeWaypoint(clientX, clientY) { return hitTestWaypoint(clientX, clientY, PIPE_NETWORK); }
+export function findPipeConnectionAtCell(col, row) { return findConnectionAtCell(col, row, PIPE_NETWORK); }
 
 // 新途经点应插入 conn.waypoints 的下标：数出在被点击线段之前(含)出现的既有途经点数。
 export function waypointInsertIndex(conn, segmentIndex) {

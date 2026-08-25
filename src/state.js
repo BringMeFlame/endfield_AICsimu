@@ -3,6 +3,7 @@ export const canvas = document.getElementById('canvas');
 export const ctx = canvas.getContext('2d');
 export const toolbar = document.getElementById('toolbar');
 export const crusherIcon = document.getElementById('crusher-icon');
+export const reactorIcon = document.getElementById('reactor-icon');
 export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
 
@@ -36,6 +37,14 @@ export const state = {
   nextConnId: 1,
   selectedConnectionId: null,
 
+  // ---- 管道连线数据(与 connections 结构完全一致的平行网络) ----
+  // 管道是空中单位，可以自由与传送带同格重叠/交叉，但不能穿越设备footprint，
+  // 也不能与另一条管道同朝向重叠；用独立数组而不是在 connections 里加 type
+  // 字段，避免所有现有遍历都要加过滤条件(见 pathfinding.js 的 BELT_NETWORK/PIPE_NETWORK)。
+  pipeConnections: [],
+  nextPipeConnId: 1,
+  selectedPipeConnectionId: null,
+
   // ---- 自由传送带模式(E 键切换)：先点起点 A，移动鼠标实时预览，再点终点 B 落地 ----
   // 放置传送带(含自动汇流/分流)只能在此模式下进行；普通模式只能操作设备、
   // 或删除/拖拽移动已经放好的传送带(选中整条连线、拖拽途经点)。
@@ -47,13 +56,31 @@ export const state = {
   freeBeltPreviewPts: null, // 实时预览折线(世界坐标点数组)，随鼠标移动重算
   freeBeltHoverDeviceId: null, // 悬停在某设备本体(非精确端口)上时高亮该设备
 
+  // ---- 自由管道模式(Q 键切换)：与 freeBeltMode 同构，且与之互斥(进入一个要清空另一个) ----
+  freePipeMode: false,
+  freePipeStart: null, // 同 freeBeltStart 的 kind 结构
+  freePipePreviewPts: null,
+  freePipeHoverDeviceId: null,
+
   // ---- 手动调整传送带路径(途经点)的状态 ----
   draggingWaypoint: null, // { connId, index, originalCell }：originalCell 为 null 表示这是本次拖拽
   // 才新插入的途经点(松手时若路径无效应整体移除)，否则是拖拽开始前该途经点的 {col,row}(松手时若路径无效应还原到这个值)
   pendingWaypointCreate: null, // { connId, segmentIndex, downX, downY }：按下但未确认是否为拖拽
 
+  // ---- 手动调整管道路径(途经点)的状态，结构镜像上面的传送带版 ----
+  draggingPipeWaypoint: null,
+  pendingPipeWaypointCreate: null,
+
   // ---- 普通模式下拖拽已有传送带的输入端重新接线 ----
   endpointDrag: null, // { connId, originalToDeviceId, originalToPort }
+
+  // ---- 普通模式下拖拽已有管道的输入端重新接线，结构镜像上面的传送带版 ----
+  pipeEndpointDrag: null,
+
+  // ---- 同一格重叠时管道/传送带的点击优先级循环记忆 ----
+  // { col, row, preferred: 'pipe'|'belt' }：记录上一次在这一格点击选中的是哪一层，
+  // 同一格再次点击时切换到另一层；点击别的格子时清空、重新从"管道优先"开始。
+  lastConduitClickCell: null,
 
   // ---- 光标旁的轻量提示(如"无法选择输入口作为起点") ----
   cursorTooltip: null, // { text, x, y, until }
@@ -75,5 +102,6 @@ export const state = {
 
   // ---- 从工具栏拖拽生成新设备的状态 ----
   spawning: false,
-  spawnPreview: null // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
+  spawnPreview: null, // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
+  spawningTemplateKey: null // 'crusher'|'reactor'：当前正在拖拽生成的是 SPAWN_TEMPLATES 里哪一个模板
 };

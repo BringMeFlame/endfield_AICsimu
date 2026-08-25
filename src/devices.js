@@ -1,10 +1,15 @@
 // ---- 设备数据模型、端口计算、碰撞检测 ----
-import { GRID_SIZE, PORT_COUNT, PORT_HIT_RADIUS, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS } from './constants.js';
+import { GRID_SIZE, PORT_COUNT, PORT_HIT_RADIUS, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, REACTOR_PORT_LAYOUT, REACTOR_BASE_ROLES } from './constants.js';
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 
-// ---- 工具栏拖拽生成新设备的模板 ----
-export const spawnTemplate = { w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' };
+// ---- 工具栏拖拽生成新设备的模板注册表 ----
+// key 对应工具栏图标/state.spawningTemplateKey；kind: undefined 的粉碎机和历史
+// 行为完全一致(devices 里 kind 字段本来就允许缺省，JSON 克隆也会一样丢弃 undefined)。
+export const SPAWN_TEMPLATES = [
+  { key: 'crusher', kind: undefined, w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' },
+  { key: 'reactor', kind: 'reactor', w: 5, h: 5, color: '#455a64', borderColor: '#111111', label: '反应池' },
+];
 
 export function getDeviceRectWorld(gridX, gridY, w, h) {
   return { x: gridX * GRID_SIZE, y: gridY * GRID_SIZE, w: w * GRID_SIZE, h: h * GRID_SIZE };
@@ -73,24 +78,37 @@ export function oppositeDir(d) {
 // 进入的方向；每个端口都带上自己的 dir，而不是整台设备共用一个，
 // 这样汇流器/分流器上分布在不同边的多个端口才能各自拥有正确的朝向。
 // cellCol/cellRow 是紧贴该端口、位于设备外侧的网格单元，作为寻路的起止格。
-function edgePorts(dev, pos, edge, dir) {
+// layout 可选：缺省时和历史行为完全一致(从偏移 0 开始连续放 min(PORT_COUNT,边长)
+// 个端口)；传 {count,spacing} 时改为居中、间隔 spacing 格放置 count 个端口，
+// 用于反应池"5 格边上放 2 个、间隔 1 格"这种非连续布局。
+function edgePorts(dev, pos, edge, dir, layout) {
   const leftX = pos.gridX * GRID_SIZE, rightX = (pos.gridX + dev.w) * GRID_SIZE;
   const topY = pos.gridY * GRID_SIZE, bottomY = (pos.gridY + dev.h) * GRID_SIZE;
+  const isVertical = edge === DIR_W || edge === DIR_E;
+  const edgeLen = isVertical ? dev.h : dev.w;
+  let offsets;
+  if (layout) {
+    const count = Math.min(layout.count, edgeLen);
+    const span = (count - 1) * layout.spacing + 1;
+    const margin = Math.floor((edgeLen - span) / 2);
+    offsets = Array.from({ length: count }, (_, i) => margin + i * layout.spacing);
+  } else {
+    const count = Math.min(PORT_COUNT, edgeLen);
+    offsets = Array.from({ length: count }, (_, i) => i);
+  }
   const ports = [];
-  if (edge === DIR_W || edge === DIR_E) {
+  if (isVertical) {
     const x = edge === DIR_W ? leftX : rightX;
     const outsideCol = edge === DIR_W ? pos.gridX - 1 : pos.gridX + dev.w;
-    const count = Math.min(PORT_COUNT, dev.h);
-    for (let i = 0; i < count; i++) {
-      ports.push({ index: i, x, y: topY + (i + 0.5) * GRID_SIZE, cellCol: outsideCol, cellRow: pos.gridY + i, dir });
-    }
+    offsets.forEach((off, i) => {
+      ports.push({ index: i, x, y: topY + (off + 0.5) * GRID_SIZE, cellCol: outsideCol, cellRow: pos.gridY + off, dir });
+    });
   } else {
     const y = edge === DIR_N ? topY : bottomY;
     const outsideRow = edge === DIR_N ? pos.gridY - 1 : pos.gridY + dev.h;
-    const count = Math.min(PORT_COUNT, dev.w);
-    for (let i = 0; i < count; i++) {
-      ports.push({ index: i, x: leftX + (i + 0.5) * GRID_SIZE, y, cellCol: pos.gridX + i, cellRow: outsideRow, dir });
-    }
+    offsets.forEach((off, i) => {
+      ports.push({ index: i, x: leftX + (off + 0.5) * GRID_SIZE, y, cellCol: pos.gridX + off, cellRow: outsideRow, dir });
+    });
   }
   return ports;
 }
@@ -111,41 +129,77 @@ function singleCellPort(pos, edge, dir, index) {
   };
 }
 
-// 汇流器(Merger)：占地 1x1，继承原传送带的输出边(mainOutEdge)与流向不变，
-// 其余 3 条边都可以作为输入口接入新传送带(最多 3 进 1 出)。
-// 分流器(Splitter)：占地 1x1，继承原传送带的输入边(mainInEdge)与流向不变，
-// 其余 3 条边都可以作为输出口分出新传送带(最多 1 进 3 出)。
-function nodeDevicePorts(dev, pos) {
-  if (dev.kind === 'merger') {
+// 汇流器(Merger)：占地 1x1，继承原传送带/管道的输出边(mainOutEdge)与流向不变，
+// 其余 3 条边都可以作为输入口接入新传送带/管道(最多 3 进 1 出)。
+// 分流器(Splitter)：占地 1x1，继承原传送带/管道的输入边(mainInEdge)与流向不变，
+// 其余 3 条边都可以作为输出口分出新传送带/管道(最多 1 进 3 出)。
+// portKind('belt'|'pipe')只决定打在每个端口上的标签，形状逻辑对两种节点完全一致
+// (belt/pipe 汇流器都是"3 边输入 + 1 边输出"，分流器都是"1 边输入 + 3 边输出")。
+function nodeDevicePorts(dev, pos, portKind) {
+  if (dev.kind === 'merger' || dev.kind === 'pipe-merger') {
     const outEdge = dev.mainOutEdge;
     return {
-      inputs: ALL_DIRS.filter(e => e !== outEdge).map(e => singleCellPort(pos, e, oppositeDir(e), e)),
-      outputs: [singleCellPort(pos, outEdge, outEdge, outEdge)]
+      inputs: ALL_DIRS.filter(e => e !== outEdge).map(e => ({ ...singleCellPort(pos, e, oppositeDir(e), e), portKind })),
+      outputs: [{ ...singleCellPort(pos, outEdge, outEdge, outEdge), portKind }]
     };
   }
-  // splitter
+  // splitter / pipe-splitter
   const inEdge = dev.mainInEdge;
   return {
-    inputs: [singleCellPort(pos, inEdge, oppositeDir(inEdge), inEdge)],
-    outputs: ALL_DIRS.filter(e => e !== inEdge).map(e => singleCellPort(pos, e, e, e))
+    inputs: [{ ...singleCellPort(pos, inEdge, oppositeDir(inEdge), inEdge), portKind }],
+    outputs: ALL_DIRS.filter(e => e !== inEdge).map(e => ({ ...singleCellPort(pos, e, e, e), portKind }))
   };
+}
+
+// 反应池(5x5)的边角色随旋转刚体转动：REACTOR_BASE_ROLES 定义 rot=0 时每条边
+// 的角色(上=传送带入/下=传送带出/左=管道入/右=管道出)，旋转时四条边一起按
+// (角色基准方向 + rot) % 4 转动，和粉碎机 flowDirOf 决定输出边是同一个技巧，
+// 只是从 1 组角色推广到 4 组；REACTOR_BASE_ROLES 是到 ALL_DIRS 的双射，任何
+// 旋转下四条边都保持两两不同，角色不会冲突。
+function reactorEdgeFor(dev, role) {
+  return (REACTOR_BASE_ROLES[role] + flowDirOf(dev)) % 4;
+}
+
+// 反应池：上下两条边各放 2 个传送带端口(输入/输出)，左右两条边各放 2 个管道
+// 端口(输入/输出)，每条边内部"两端各留 1 格、中间留 1 格"(REACTOR_PORT_LAYOUT)。
+// pipe 端口的 index 特意偏移到 belt 端口之后，让同一设备 inputs/outputs 合并
+// 数组里每个 index 全局唯一——resolveConnEndpoint 是按 index 在合并数组里查
+// 端口的，belt 连线和 pipe 连线各自只会用到自己那一段 index，不会查串。
+function reactorDevicePorts(dev, pos) {
+  const beltInEdge = reactorEdgeFor(dev, 'beltIn');
+  const beltOutEdge = reactorEdgeFor(dev, 'beltOut');
+  const pipeInEdge = reactorEdgeFor(dev, 'pipeIn');
+  const pipeOutEdge = reactorEdgeFor(dev, 'pipeOut');
+
+  const beltInputs = edgePorts(dev, pos, beltInEdge, oppositeDir(beltInEdge), REACTOR_PORT_LAYOUT)
+    .map(p => ({ ...p, portKind: 'belt' }));
+  const beltOutputs = edgePorts(dev, pos, beltOutEdge, beltOutEdge, REACTOR_PORT_LAYOUT)
+    .map(p => ({ ...p, portKind: 'belt' }));
+  const pipeInputs = edgePorts(dev, pos, pipeInEdge, oppositeDir(pipeInEdge), REACTOR_PORT_LAYOUT)
+    .map((p, i) => ({ ...p, index: beltInputs.length + i, portKind: 'pipe' }));
+  const pipeOutputs = edgePorts(dev, pos, pipeOutEdge, pipeOutEdge, REACTOR_PORT_LAYOUT)
+    .map((p, i) => ({ ...p, index: beltOutputs.length + i, portKind: 'pipe' }));
+
+  return { inputs: beltInputs.concat(pipeInputs), outputs: beltOutputs.concat(pipeOutputs) };
 }
 
 export function getDevicePorts(dev, pos) {
-  if (dev.kind === 'merger' || dev.kind === 'splitter') return nodeDevicePorts(dev, pos);
+  if (dev.kind === 'merger' || dev.kind === 'splitter') return nodeDevicePorts(dev, pos, 'belt');
+  if (dev.kind === 'pipe-merger' || dev.kind === 'pipe-splitter') return nodeDevicePorts(dev, pos, 'pipe');
+  if (dev.kind === 'reactor') return reactorDevicePorts(dev, pos);
   const flowDir = flowDirOf(dev);
   return {
-    inputs: edgePorts(dev, pos, oppositeDir(flowDir), flowDir),
-    outputs: edgePorts(dev, pos, flowDir, flowDir)
+    inputs: edgePorts(dev, pos, oppositeDir(flowDir), flowDir).map(p => ({ ...p, portKind: 'belt' })),
+    outputs: edgePorts(dev, pos, flowDir, flowDir).map(p => ({ ...p, portKind: 'belt' }))
   };
 }
 
-export function findPortAt(clientX, clientY, portType) {
+export function findPortAt(clientX, clientY, portType, portKind = 'belt') {
   for (let i = state.devices.length - 1; i >= 0; i--) {
     const dev = state.devices[i];
     const pos = effectiveGridPos(dev);
     const ports = getDevicePorts(dev, pos);
-    const list = portType === 'output' ? ports.outputs : ports.inputs;
+    const list = (portType === 'output' ? ports.outputs : ports.inputs).filter(p => p.portKind === portKind);
     for (const p of list) {
       const s = worldToScreen(p.x, p.y);
       const dx = clientX - s.x, dy = clientY - s.y;
@@ -162,4 +216,10 @@ export function isOutputPortUsed(deviceId, index) {
 }
 export function isInputPortUsed(deviceId, index) {
   return state.connections.some(c => c.toDeviceId === deviceId && c.toPort === index);
+}
+export function isPipeOutputPortUsed(deviceId, index) {
+  return state.pipeConnections.some(c => c.fromDeviceId === deviceId && c.fromPort === index);
+}
+export function isPipeInputPortUsed(deviceId, index) {
+  return state.pipeConnections.some(c => c.toDeviceId === deviceId && c.toPort === index);
 }

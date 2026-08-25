@@ -33,6 +33,10 @@ canvas {
   border-color: rgba(102, 187, 106, 0.6);
   color: #eafaf0;
 }
+#hint.pipe-mode {
+  border-color: rgba(41, 182, 246, 0.6);
+  color: #e3f6ff;
+}
 
 #toolbar {
   position: fixed;

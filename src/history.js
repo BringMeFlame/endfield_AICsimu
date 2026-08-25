@@ -2,13 +2,16 @@
 import { HISTORY_LIMIT } from './constants.js';
 import { state } from './state.js';
 import { draw } from './render.js';
+import { BELT_NETWORK } from './pathfinding.js';
 
 export function cloneCanvasState() {
   return {
     devices: JSON.parse(JSON.stringify(state.devices)),
     connections: JSON.parse(JSON.stringify(state.connections)),
     nextId: state.nextId,
-    nextConnId: state.nextConnId
+    nextConnId: state.nextConnId,
+    pipeConnections: JSON.parse(JSON.stringify(state.pipeConnections)),
+    nextPipeConnId: state.nextPipeConnId
   };
 }
 
@@ -26,18 +29,31 @@ export function undo() {
   state.connections = prev.connections;
   state.nextId = prev.nextId;
   state.nextConnId = prev.nextConnId;
+  state.pipeConnections = prev.pipeConnections;
+  state.nextPipeConnId = prev.nextPipeConnId;
 
   // 撤销可能作用在正在进行中的交互上，统一清空所有瞬时交互状态，避免悬空引用
+  // (注意 freeBeltMode/freePipeMode 这两个模式开关本身不在此重置之列，只重置
+  // "进行中"的状态，和现有 freeBeltMode 的处理方式保持一致)
   state.selectedId = null;
   state.selectedConnectionId = null;
+  state.selectedPipeConnectionId = null;
   state.draggingDeviceId = null;
   state.draggingDeviceBeforeSnapshot = null;
   state.draggingWaypoint = null;
   state.pendingWaypointCreate = null;
   state.endpointDrag = null;
+  state.draggingPipeWaypoint = null;
+  state.pendingPipeWaypointCreate = null;
+  state.pipeEndpointDrag = null;
   state.freeBeltStart = null;
   state.freeBeltPreviewPts = null;
   state.freeBeltHoverDeviceId = null;
+  state.freePipeStart = null;
+  state.freePipePreviewPts = null;
+  state.freePipeHoverDeviceId = null;
+  state.lastConduitClickCell = null;
+  state.spawningTemplateKey = null;
   state.isPanning = false;
 
   draw();
@@ -58,13 +74,19 @@ export function revertLastHistoryStep() {
   state.connections = prev.connections;
   state.nextId = prev.nextId;
   state.nextConnId = prev.nextConnId;
+  state.pipeConnections = prev.pipeConnections;
+  state.nextPipeConnId = prev.nextPipeConnId;
 }
 
 // 判断这次操作是否把某条"操作前就存在、且当时合法"的连线变成了 invalid(不
 // 关心操作本身新生成的连线是否 invalid——比如自由传送带模式画一条到不可达位
 // 置的新线，维持现有的"画出来、留给用户后续调整"行为，不在这里连带撤销)。
-export function brokeExistingValidConnection(beforeSnapshot) {
-  const beforeIds = new Set(beforeSnapshot.connections.map(c => c.id));
-  const beforeInvalidIds = new Set(beforeSnapshot.connections.filter(c => c.invalid).map(c => c.id));
-  return state.connections.some(c => beforeIds.has(c.id) && !beforeInvalidIds.has(c.id) && c.invalid);
+// network 默认为传送带网络；管道分流器/汇流器落在已有传送带地面格上是唯一被
+// 批准可以弄坏传送带而不触发这里的例外(那里改用仅检查管道网络自身，见
+// interactions.js 里 createPipeSplitterAtClick/finalizePipeConnection 的注释)。
+export function brokeExistingValidConnection(beforeSnapshot, network = BELT_NETWORK) {
+  const beforeConns = network.kind === 'pipe' ? beforeSnapshot.pipeConnections : beforeSnapshot.connections;
+  const beforeIds = new Set(beforeConns.map(c => c.id));
+  const beforeInvalidIds = new Set(beforeConns.filter(c => c.invalid).map(c => c.id));
+  return network.getConns().some(c => beforeIds.has(c.id) && !beforeInvalidIds.has(c.id) && c.invalid);
 }
