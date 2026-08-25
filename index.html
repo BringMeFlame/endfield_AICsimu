@@ -181,7 +181,8 @@
   let freeBeltHoverDeviceId = null; // 悬停在某设备本体(非精确端口)上时高亮该设备
 
   // ---- 手动调整传送带路径(途经点)的状态 ----
-  let draggingWaypoint = null; // { connId, index }
+  let draggingWaypoint = null; // { connId, index, originalCell }：originalCell 为 null 表示这是本次拖拽
+  // 才新插入的途经点(松手时若路径无效应整体移除)，否则是拖拽开始前该途经点的 {col,row}(松手时若路径无效应还原到这个值)
   let pendingWaypointCreate = null; // { connId, segmentIndex, downX, downY }：按下但未确认是否为拖拽
 
   // ---- 普通模式下拖拽已有传送带的输入端重新接线 ----
@@ -650,6 +651,21 @@
     return result;
   }
 
+  // 检测一条(可能由多跳拼接而成的)完整格子路径里是否有任何格子被经过不止一次。
+  // 用于 computePath 判定"传送带不能自我重叠"这条硬性规则——注意这里只做只读检测、
+  // 不做任何截断/修改，不能和 removeSelfOverlap 混用：截断会把用户故意拖出来的
+  // 折返造型连同途经点效果一起吃掉(见下方 computePath 里的大段注释)，而这里只是
+  // 把"会自我重叠的路径"标成 invalid，交给拖拽结束时的还原逻辑去处理。
+  function hasSelfOverlap(cellPath) {
+    const seen = new Set();
+    for (const cell of cellPath) {
+      const key = cell.col + ',' + cell.row;
+      if (seen.has(key)) return true;
+      seen.add(key);
+    }
+    return false;
+  }
+
   // 合并折线中方向相同的连续共线点，得到干净的直角拐点序列
   function simplifyCollinear(pts) {
     if (pts.length < 3) return pts;
@@ -753,13 +769,26 @@
     if (!fullCellPath) {
       return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, startDir, goalDir, invalid: true };
     }
-    // 注意：这里不能再对拼接后的完整路径整体做 removeSelfOverlap。每一跳自己的
-    // A* 结果已经在上面单独去重过(消除了该跳自身因方向约束产生的"多凸出一格
-    // 再掉头"伪影)；但当路径带有手动途经点时，后一跳为了从途经点绕回终点，
-    // 完全可能合法地需要原路折返、经过前一跳已经用过的格子(比如途经点被拖到
-    // 终点的"反方向"时)。这种折返是用户故意摆出的造型，不是伪影，如果再整体
-    // 去重会把这段折返连同途经点的效果一起吃掉，导致拖动途经点时传送带看起来
-    // "纹丝不动"。
+    // 注意：这里不能再对拼接后的完整路径整体做 removeSelfOverlap 去"截断"路径。
+    // 每一跳自己的 A* 结果已经在上面单独去重过(消除了该跳自身因方向约束产生的
+    // "多凸出一格再掉头"伪影)；但当路径带有手动途经点时，后一跳为了从途经点绕
+    // 回终点，在几何上完全可能需要经过前一跳已经用过的格子(比如途经点被拖到
+    // 终点的"反方向"时)。截断会把这段折返连同途经点的效果一起吃掉，导致拖动
+    // 途经点时传送带看起来"纹丝不动"(拖不动 bug)。
+    //
+    // 但"不截断"不代表"允许"：传送带物理上不能自我重叠(同一段带子不能同时
+    // 表示两个方向的物料流动)，所以这里只做只读检测——一旦发现拼接后的完整
+    // 路径经过了同一个格子两次，就整体判定为 invalid，用现有的"无法找到路径"
+    // 红色警示渲染出来，交给拖拽结束(mouseup)时的还原逻辑把这次改动撤销，而不
+    // 是悄悄把它当成合法路径画出来，或者反过来粗暴截断掉用户的操作。
+    if (hasSelfOverlap(fullCellPath)) {
+      const previewPts = [{ x: startPort.x, y: startPort.y }];
+      for (const c of fullCellPath) {
+        previewPts.push({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE });
+      }
+      previewPts.push({ x: endPort.x, y: endPort.y });
+      return { points: dedupePoints(previewPts), cellPath: null, startDir, goalDir, invalid: true };
+    }
 
     const pts = [{ x: startPort.x, y: startPort.y }];
     for (const c of fullCellPath) {
@@ -1620,7 +1649,9 @@
     const wpHit = hitTestWaypoint(e.clientX, e.clientY);
     if (wpHit) {
       pushHistory();
-      draggingWaypoint = wpHit;
+      const wpConn = connections.find(c => c.id === wpHit.connId);
+      const originalCell = wpConn && wpConn.waypoints[wpHit.index] ? { ...wpConn.waypoints[wpHit.index] } : null;
+      draggingWaypoint = { connId: wpHit.connId, index: wpHit.index, originalCell };
       selectedId = null;
       selectedConnectionId = wpHit.connId;
       draw();
@@ -1727,7 +1758,7 @@
           if (!conn.waypoints) conn.waypoints = [];
           const insertAt = waypointInsertIndex(conn, pendingWaypointCreate.segmentIndex);
           conn.waypoints.splice(insertAt, 0, cell);
-          draggingWaypoint = { connId: conn.id, index: insertAt };
+          draggingWaypoint = { connId: conn.id, index: insertAt, originalCell: null };
           recomputeAllConnections();
           draw();
         }
@@ -1794,12 +1825,31 @@
           conn.toCell = null;
         }
         recomputeAllConnections();
+        // 落在了某个输入口上，但该位置实际算出来的路径会自我重叠(无法计算出
+        // 合法的不重叠路径)：不接受这次改接，还原回拖拽前的输入口。
+        if (target && conn.invalid) {
+          conn.toDeviceId = endpointDrag.originalToDeviceId;
+          conn.toPort = endpointDrag.originalToPort;
+          conn.toCell = null;
+          recomputeAllConnections();
+        }
       }
       endpointDrag = null;
       draw();
       return;
     }
     if (draggingWaypoint) {
+      const wpConn = connections.find(c => c.id === draggingWaypoint.connId);
+      // 松手时若这个途经点位置导致路径无效(自我重叠或找不到路径)，取消这次改动：
+      // 新插入的途经点直接移除，移动已有途经点则还原回拖拽前的位置。
+      if (wpConn && wpConn.waypoints && wpConn.invalid) {
+        if (draggingWaypoint.originalCell) {
+          wpConn.waypoints[draggingWaypoint.index] = draggingWaypoint.originalCell;
+        } else {
+          wpConn.waypoints.splice(draggingWaypoint.index, 1);
+        }
+        recomputeAllConnections();
+      }
       draggingWaypoint = null;
       draw();
       return;
