@@ -115,10 +115,11 @@
 <div id="hint">
   拖拽空白处：平移画布　|　滚轮：缩放<br>
   从左侧工具栏拖出图标：放置设备<br>
-  点击设备：选中（高亮边框）　|　Delete / Backspace：删除选中设备/连线<br>
+  点击设备：选中（高亮边框）　|　R：顺时针旋转选中设备　|　Delete / Backspace：删除选中设备/连线<br>
   设备网格重叠时会实时标红警示<br>
-  从蓝色输入口/橙色输出口拖拽：橙色输出口拉到蓝色输入口自动生成传送带（A* 直角寻路）<br>
-  拖动设备时，相连的传送带会实时重新寻路
+  从蓝色输入口/橙色输出口拖拽：橙色输出口拉到蓝色输入口自动生成传送带（A* 直角寻路，禁止重叠、交叉处生成物流桥）<br>
+  拖动设备时，相连的传送带会实时重新寻路<br>
+  拖拽传送带线体：插入/移动一个途经点，自由调整路线　|　双击途经点：删除
 </div>
 
 <script>
@@ -160,6 +161,10 @@
   let wireDragFrom = null; // { deviceId, index, x, y }
   let wireDragCurrent = { x: 0, y: 0 };
   let hoverInputPort = null; // { deviceId, index }
+
+  // ---- 手动调整传送带路径(途经点)的状态 ----
+  let draggingWaypoint = null; // { connId, index }
+  let pendingWaypointCreate = null; // { connId, segmentIndex, downX, downY }：按下但未确认是否为拖拽
 
   // ---- 画布内交互状态 ----
   let isPanning = false;
@@ -250,21 +255,47 @@
 
   // ---- 端口(输入口/输出口) ----
 
-  // 计算设备的输入口/输出口世界坐标。输入口在左边缘、输出口在右边缘，
-  // 每行一个端口，物料始终沿 +x 方向流动(输入口箭头指入设备，输出口箭头指出设备)。
+  // 设备的朝向(rot: 0~3，每次 R 键旋转 +1，代表顺时针 90°*rot)决定物料流动方向
+  // (flowDir，与 DIR_E/S/W/N 编号一致：0°→东，90°→南，180°→西，270°→北)。
+  // 输出口位于 flowDir 指向的那条边，输入口位于其正对边，两者的端口箭头都指向 flowDir。
+  function flowDirOf(dev) {
+    return ((dev.rot || 0) % 4 + 4) % 4;
+  }
+  function oppositeDir(d) {
+    return (d + 2) % 4;
+  }
+
+  // 沿设备某一条边取端口世界坐标。edge 用 DIR_E/S/W/N 表示该边朝外的方向
+  // (DIR_E=右边缘、DIR_S=下边缘、DIR_W=左边缘、DIR_N=上边缘)。
   // cellCol/cellRow 是紧贴该端口、位于设备外侧的网格单元，作为寻路的起止格。
-  function getDevicePorts(dev, pos) {
-    const inputs = [], outputs = [];
-    const leftX = pos.gridX * GRID_SIZE;
-    const rightX = (pos.gridX + dev.w) * GRID_SIZE;
-    const topY = pos.gridY * GRID_SIZE;
-    const count = Math.min(PORT_COUNT, dev.h);
-    for (let i = 0; i < count; i++) {
-      const py = topY + (i + 0.5) * GRID_SIZE;
-      inputs.push({ index: i, x: leftX, y: py, cellCol: pos.gridX - 1, cellRow: pos.gridY + i });
-      outputs.push({ index: i, x: rightX, y: py, cellCol: pos.gridX + dev.w, cellRow: pos.gridY + i });
+  function edgePorts(dev, pos, edge) {
+    const leftX = pos.gridX * GRID_SIZE, rightX = (pos.gridX + dev.w) * GRID_SIZE;
+    const topY = pos.gridY * GRID_SIZE, bottomY = (pos.gridY + dev.h) * GRID_SIZE;
+    const ports = [];
+    if (edge === DIR_W || edge === DIR_E) {
+      const x = edge === DIR_W ? leftX : rightX;
+      const outsideCol = edge === DIR_W ? pos.gridX - 1 : pos.gridX + dev.w;
+      const count = Math.min(PORT_COUNT, dev.h);
+      for (let i = 0; i < count; i++) {
+        ports.push({ index: i, x, y: topY + (i + 0.5) * GRID_SIZE, cellCol: outsideCol, cellRow: pos.gridY + i });
+      }
+    } else {
+      const y = edge === DIR_N ? topY : bottomY;
+      const outsideRow = edge === DIR_N ? pos.gridY - 1 : pos.gridY + dev.h;
+      const count = Math.min(PORT_COUNT, dev.w);
+      for (let i = 0; i < count; i++) {
+        ports.push({ index: i, x: leftX + (i + 0.5) * GRID_SIZE, y, cellCol: pos.gridX + i, cellRow: outsideRow });
+      }
     }
-    return { inputs, outputs };
+    return ports;
+  }
+
+  function getDevicePorts(dev, pos) {
+    const flowDir = flowDirOf(dev);
+    return {
+      inputs: edgePorts(dev, pos, oppositeDir(flowDir)),
+      outputs: edgePorts(dev, pos, flowDir)
+    };
   }
 
   function findPortAt(clientX, clientY, portType) {
@@ -358,12 +389,13 @@
   }
 
   // 给定一条连线的格子路径，得到它经过每个格子时使用的朝向('H'/'V')。
-  // 起点视为从端口沿 +x 方向进入，终点视为沿 +x 方向进入端口。
-  function cellOrientationsOf(cellPath) {
+  // 起点视为沿 startDir 方向进入，终点视为沿 goalDir 方向进入端口
+  // (两者取自源/目标设备当前的物料流动方向，随设备旋转而变化)。
+  function cellOrientationsOf(cellPath, startDir, goalDir) {
     const list = [];
     for (let i = 0; i < cellPath.length; i++) {
-      const entryDir = i === 0 ? DIR_E : dirBetween(cellPath[i - 1], cellPath[i]);
-      const exitDir = i === cellPath.length - 1 ? DIR_E : dirBetween(cellPath[i], cellPath[i + 1]);
+      const entryDir = i === 0 ? startDir : dirBetween(cellPath[i - 1], cellPath[i]);
+      const exitDir = i === cellPath.length - 1 ? goalDir : dirBetween(cellPath[i], cellPath[i + 1]);
       list.push({ cell: cellPath[i], entryDir, exitDir });
     }
     return list;
@@ -375,7 +407,7 @@
     const map = new Map();
     for (const c of connections) {
       if (c.id === excludeConnId || !c.cellPath) continue;
-      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath)) {
+      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath, c.startDir, c.goalDir)) {
         const key = cell.col + ',' + cell.row;
         let set = map.get(key);
         if (!set) { set = new Set(); map.set(key, set); }
@@ -387,11 +419,12 @@
   }
 
   // 状态空间为 (col, row, dir)：dir 表示到达该格时的移动方向，用于计算转弯惩罚。
-  // 起点视为"刚从输出口沿 +x 方向进入格子"，终点要求"沿 +x 方向进入格子"才算到达输入口，
-  // 这样生成的路径两端总是与设备边缘垂直、笔直地接入端口。
+  // startDir 是进入起点格时视为的移动方向(用于计算第一步是否转弯)；goalDir 为 null
+  // 表示以任意方向到达终点格即可(途经点)，否则必须恰好沿 goalDir 方向进入终点格
+  // (真正的输入口要求笔直接入)。
   // beltOccupancy 记录其它传送带占用的格子及朝向：同朝向直行视为重叠(禁止)，
   // 仅垂直方向穿过视为合法交叉(允许，渲染时生成物流桥)；已被占用的格子内不允许转弯。
-  function aStarOrthogonal(startCol, startRow, goalCol, goalRow, blocked, beltOccupancy) {
+  function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy) {
     if (startCol === goalCol && startRow === goalRow) {
       return [{ col: startCol, row: startRow }];
     }
@@ -402,11 +435,11 @@
 
       const gScore = new Map();
       const cameFrom = new Map();
-      const startKey = startCol + ',' + startRow + ',' + DIR_E;
+      const startKey = startCol + ',' + startRow + ',' + startDir;
       gScore.set(startKey, 0);
 
       const heap = new MinHeap();
-      heap.push({ key: startKey, col: startCol, row: startRow, dir: DIR_E, f: manhattan(startCol, startRow, goalCol, goalRow) });
+      heap.push({ key: startKey, col: startCol, row: startRow, dir: startDir, f: manhattan(startCol, startRow, goalCol, goalRow) });
       const closed = new Set();
 
       while (heap.size) {
@@ -414,7 +447,7 @@
         if (closed.has(node.key)) continue;
         closed.add(node.key);
 
-        if (node.col === goalCol && node.row === goalRow && node.dir === DIR_E) {
+        if (node.col === goalCol && node.row === goalRow && (goalDir === null || node.dir === goalDir)) {
           const path = [];
           let curKey = node.key;
           while (curKey) {
@@ -487,31 +520,54 @@
   // 计算一条连线从输出口到输入口的最佳直角路径。
   // 传送带之间不允许重叠，但允许十字交叉(交叉处渲染物流桥)，因此需要排除
   // 该连线自身之前占用的格子后，再依据其它连线的占用情况进行寻路。
+  // 若连线带有手动途经点(conn.waypoints)，则依次对"输出口→途经点1→…→输入口"
+  // 的每一段分别寻路再首尾相接，途经点之间的转向不做方向限制，只有最终进入
+  // 输入口那一段仍要求笔直接入，从而让用户能强制路线绕开某片区域、自由摆造型，
+  // 同时仍复用同一套避障/转弯惩罚/不重叠规则。
   function computePath(conn) {
     const fromDev = devices.find(d => d.id === conn.fromDeviceId);
     const toDev = devices.find(d => d.id === conn.toDeviceId);
-    if (!fromDev || !toDev) return { points: [], cellPath: null, invalid: true };
+    if (!fromDev || !toDev) return { points: [], cellPath: null, startDir: null, goalDir: null, invalid: true };
 
     const fromPos = effectiveGridPos(fromDev);
     const toPos = effectiveGridPos(toDev);
+    const startDir = flowDirOf(fromDev);
+    const goalDir = flowDirOf(toDev);
     const startPort = getDevicePorts(fromDev, fromPos).outputs[conn.fromPort];
     const endPort = getDevicePorts(toDev, toPos).inputs[conn.toPort];
-    if (!startPort || !endPort) return { points: [], cellPath: null, invalid: true };
+    if (!startPort || !endPort) return { points: [], cellPath: null, startDir, goalDir, invalid: true };
 
     const blocked = buildBlockedSet();
     const beltOccupancy = buildBeltOccupancy(conn.id);
-    const cellPath = aStarOrthogonal(startPort.cellCol, startPort.cellRow, endPort.cellCol, endPort.cellRow, blocked, beltOccupancy);
-    if (!cellPath) {
-      return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, invalid: true };
+
+    const checkpoints = [
+      { col: startPort.cellCol, row: startPort.cellRow },
+      ...(conn.waypoints || []),
+      { col: endPort.cellCol, row: endPort.cellRow }
+    ];
+
+    let fullCellPath = null;
+    let curDir = startDir;
+    for (let i = 0; i < checkpoints.length - 1; i++) {
+      const a = checkpoints[i], b = checkpoints[i + 1];
+      const hopGoalDir = i === checkpoints.length - 2 ? goalDir : null;
+      const hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
+      if (!hopPath) { fullCellPath = null; break; }
+      fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));
+      if (hopPath.length >= 2) curDir = dirBetween(hopPath[hopPath.length - 2], hopPath[hopPath.length - 1]);
+    }
+
+    if (!fullCellPath) {
+      return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, startDir, goalDir, invalid: true };
     }
 
     const pts = [{ x: startPort.x, y: startPort.y }];
-    for (const c of cellPath) {
+    for (const c of fullCellPath) {
       pts.push({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE });
     }
     pts.push({ x: endPort.x, y: endPort.y });
 
-    return { points: simplifyCollinear(dedupePoints(pts)), cellPath, invalid: false };
+    return { points: simplifyCollinear(dedupePoints(pts)), cellPath: fullCellPath, startDir, goalDir, invalid: false };
   }
 
   // 设备布局发生任何变化(拖动/新增/删除)都可能影响其他连线的最佳绕行路径，
@@ -521,6 +577,8 @@
       const res = computePath(c);
       c.points = res.points;
       c.cellPath = res.cellPath;
+      c.startDir = res.startDir;
+      c.goalDir = res.goalDir;
       c.invalid = res.invalid;
     }
   }
@@ -531,7 +589,7 @@
     const cellMap = new Map();
     for (const c of connections) {
       if (!c.cellPath) continue;
-      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath)) {
+      for (const { cell, entryDir, exitDir } of cellOrientationsOf(c.cellPath, c.startDir, c.goalDir)) {
         if (entryDir !== exitDir) continue; // 拐弯格不可能与其它传送带共用，跳过
         const key = cell.col + ',' + cell.row;
         let arr = cellMap.get(key);
@@ -560,6 +618,8 @@
     return Math.hypot(px - cx, py - cy);
   }
 
+  // 返回 { conn, segmentIndex }：segmentIndex 是命中的 conn.points[j]-conn.points[j+1] 线段下标，
+  // 供手动拖拽新增途经点时判断插入顺序。
   function hitTestConnection(clientX, clientY) {
     const THRESH = BELT_WIDTH / 2 + 2;
     for (let i = connections.length - 1; i >= 0; i--) {
@@ -568,10 +628,41 @@
       for (let j = 0; j < c.points.length - 1; j++) {
         const a = worldToScreen(c.points[j].x, c.points[j].y);
         const b = worldToScreen(c.points[j + 1].x, c.points[j + 1].y);
-        if (distPointToSegment(clientX, clientY, a.x, a.y, b.x, b.y) <= THRESH) return c;
+        if (distPointToSegment(clientX, clientY, a.x, a.y, b.x, b.y) <= THRESH) return { conn: c, segmentIndex: j };
       }
     }
     return null;
+  }
+
+  // ---- 手动途经点(拖拽调整传送带路径) ----
+
+  function worldToCell(wx, wy) {
+    return { col: Math.floor(wx / GRID_SIZE), row: Math.floor(wy / GRID_SIZE) };
+  }
+
+  function hitTestWaypoint(clientX, clientY) {
+    for (const c of connections) {
+      if (!c.waypoints) continue;
+      for (let i = 0; i < c.waypoints.length; i++) {
+        const wp = c.waypoints[i];
+        const s = worldToScreen((wp.col + 0.5) * GRID_SIZE, (wp.row + 0.5) * GRID_SIZE);
+        const dx = clientX - s.x, dy = clientY - s.y;
+        if (dx * dx + dy * dy <= PORT_HIT_RADIUS * PORT_HIT_RADIUS) return { connId: c.id, index: i };
+      }
+    }
+    return null;
+  }
+
+  // 新途经点应插入 conn.waypoints 的下标：数出在被点击线段之前(含)出现的既有途经点数。
+  function waypointInsertIndex(conn, segmentIndex) {
+    if (!conn.waypoints || conn.waypoints.length === 0) return 0;
+    let count = 0;
+    for (const wp of conn.waypoints) {
+      const wx = (wp.col + 0.5) * GRID_SIZE, wy = (wp.row + 0.5) * GRID_SIZE;
+      const idx = conn.points.findIndex(p => Math.abs(p.x - wx) < 0.01 && Math.abs(p.y - wy) < 0.01);
+      if (idx !== -1 && idx <= segmentIndex) count++;
+    }
+    return count;
   }
 
   // ---- 绘制 ----
@@ -686,7 +777,12 @@
     return (!sameDevice && !used) ? 'valid' : 'invalid';
   }
 
-  function drawPortMarker(p, type, deviceId, connected) {
+  // 方向 -> 屏幕空间旋转角度(0°=东，与 DIR_E/S/W/N 的顺时针编号一致)
+  function angleForDir(dir) {
+    return dir * Math.PI / 2;
+  }
+
+  function drawPortMarker(p, type, deviceId, connected, flowDir) {
     const screen = worldToScreen(p.x, p.y);
     const hover = portHoverState(type, deviceId, p.index);
 
@@ -704,12 +800,14 @@
     ctx.fill();
     ctx.stroke();
 
-    // 方向箭头：物料始终沿 +x 方向流动
+    // 方向箭头：指向该设备当前的物料流动方向(随旋转变化)
+    ctx.translate(screen.x, screen.y);
+    ctx.rotate(angleForDir(flowDir));
     ctx.fillStyle = '#111';
     ctx.beginPath();
-    ctx.moveTo(screen.x + 5, screen.y);
-    ctx.lineTo(screen.x - 2, screen.y - 4);
-    ctx.lineTo(screen.x - 2, screen.y + 4);
+    ctx.moveTo(5, 0);
+    ctx.lineTo(-2, -4);
+    ctx.lineTo(-2, 4);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -717,8 +815,9 @@
 
   function drawDevicePorts(dev, pos) {
     const ports = getDevicePorts(dev, pos);
-    for (const p of ports.inputs) drawPortMarker(p, 'input', dev.id, isInputPortUsed(dev.id, p.index));
-    for (const p of ports.outputs) drawPortMarker(p, 'output', dev.id, isOutputPortUsed(dev.id, p.index));
+    const flowDir = flowDirOf(dev);
+    for (const p of ports.inputs) drawPortMarker(p, 'input', dev.id, isInputPortUsed(dev.id, p.index), flowDir);
+    for (const p of ports.outputs) drawPortMarker(p, 'output', dev.id, isOutputPortUsed(dev.id, p.index), flowDir);
   }
 
   const BELT_WIDTH = 14;      // 传送带整体宽度(屏幕像素，含外框)
@@ -873,6 +972,35 @@
     }
   }
 
+  // 手动途经点：菱形手柄，可拖拽移动、双击删除，用于自由调整传送带走向
+  function drawWaypointHandle(wp, dragging) {
+    const screen = worldToScreen((wp.col + 0.5) * GRID_SIZE, (wp.row + 0.5) * GRID_SIZE);
+    const s = 6;
+    ctx.save();
+    ctx.fillStyle = dragging ? '#ffeb3b' : '#e0e0e0';
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(screen.x, screen.y - s);
+    ctx.lineTo(screen.x + s, screen.y);
+    ctx.lineTo(screen.x, screen.y + s);
+    ctx.lineTo(screen.x - s, screen.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawWaypoints() {
+    for (const c of connections) {
+      if (!c.waypoints) continue;
+      for (let i = 0; i < c.waypoints.length; i++) {
+        const dragging = !!(draggingWaypoint && draggingWaypoint.connId === c.id && draggingWaypoint.index === i);
+        drawWaypointHandle(c.waypoints[i], dragging);
+      }
+    }
+  }
+
   function drawWireDragPreview() {
     if (!wireDragging || !wireDragFrom) return;
     const start = { x: wireDragFrom.x, y: wireDragFrom.y };
@@ -924,6 +1052,7 @@
     drawGrid();
     drawConnections();
     drawDevices();
+    drawWaypoints();
     drawSpawnPreview();
     drawWireDragPreview();
   }
@@ -945,6 +1074,15 @@
       return;
     }
 
+    const wpHit = hitTestWaypoint(e.clientX, e.clientY);
+    if (wpHit) {
+      draggingWaypoint = wpHit;
+      selectedId = null;
+      selectedConnectionId = wpHit.connId;
+      draw();
+      return;
+    }
+
     const worldPos = screenToWorld(e.clientX, e.clientY);
     const hit = hitTestDevice(worldPos.x, worldPos.y);
 
@@ -963,8 +1101,10 @@
 
     const connHit = hitTestConnection(e.clientX, e.clientY);
     if (connHit) {
-      selectedConnectionId = connHit.id;
+      selectedConnectionId = connHit.conn.id;
       selectedId = null;
+      // 先记录待定状态：真正拖动后才在该线段处插入新途经点，单纯点击仍只是选中
+      pendingWaypointCreate = { connId: connHit.conn.id, segmentIndex: connHit.segmentIndex, downX: e.clientX, downY: e.clientY };
       draw();
       return;
     }
@@ -978,7 +1118,46 @@
     draw();
   });
 
+  canvas.addEventListener('dblclick', (e) => {
+    const wpHit = hitTestWaypoint(e.clientX, e.clientY);
+    if (!wpHit) return;
+    const conn = connections.find(c => c.id === wpHit.connId);
+    if (conn && conn.waypoints) {
+      conn.waypoints.splice(wpHit.index, 1);
+      recomputeAllConnections();
+      draw();
+    }
+  });
+
   window.addEventListener('mousemove', (e) => {
+    if (draggingWaypoint) {
+      const conn = connections.find(c => c.id === draggingWaypoint.connId);
+      if (conn && conn.waypoints && conn.waypoints[draggingWaypoint.index]) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        conn.waypoints[draggingWaypoint.index] = worldToCell(worldPos.x, worldPos.y);
+        recomputeAllConnections();
+        draw();
+      }
+      return;
+    }
+    if (pendingWaypointCreate) {
+      const dx = e.clientX - pendingWaypointCreate.downX, dy = e.clientY - pendingWaypointCreate.downY;
+      if (dx * dx + dy * dy > 16) {
+        const conn = connections.find(c => c.id === pendingWaypointCreate.connId);
+        if (conn) {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const cell = worldToCell(worldPos.x, worldPos.y);
+          if (!conn.waypoints) conn.waypoints = [];
+          const insertAt = waypointInsertIndex(conn, pendingWaypointCreate.segmentIndex);
+          conn.waypoints.splice(insertAt, 0, cell);
+          draggingWaypoint = { connId: conn.id, index: insertAt };
+          recomputeAllConnections();
+          draw();
+        }
+        pendingWaypointCreate = null;
+      }
+      return;
+    }
     if (wireDragging) {
       wireDragCurrent = screenToWorld(e.clientX, e.clientY);
       hoverInputPort = findPortAt(e.clientX, e.clientY, 'input');
@@ -1010,6 +1189,16 @@
   });
 
   window.addEventListener('mouseup', (e) => {
+    if (draggingWaypoint) {
+      draggingWaypoint = null;
+      draw();
+      return;
+    }
+    if (pendingWaypointCreate) {
+      // 未超过拖动阈值：视为单纯点击，仅保留 mousedown 时已做的选中效果
+      pendingWaypointCreate = null;
+      return;
+    }
     if (wireDragging) {
       const target = findPortAt(e.clientX, e.clientY, 'input');
       if (target && target.deviceId !== wireDragFrom.deviceId && !isInputPortUsed(target.deviceId, target.index)) {
@@ -1019,13 +1208,18 @@
           fromPort: wireDragFrom.index,
           toDeviceId: target.deviceId,
           toPort: target.index,
+          waypoints: [],
           points: [],
           cellPath: null,
+          startDir: null,
+          goalDir: null,
           invalid: false
         };
         const res = computePath(conn);
         conn.points = res.points;
         conn.cellPath = res.cellPath;
+        conn.startDir = res.startDir;
+        conn.goalDir = res.goalDir;
         conn.invalid = res.invalid;
         connections.push(conn);
         selectedConnectionId = conn.id;
@@ -1066,9 +1260,20 @@
     draw();
   }, { passive: false });
 
-  // ---- 键盘删除 ----
+  // ---- 键盘：删除 / 旋转 ----
 
   window.addEventListener('keydown', (e) => {
+    if (e.key === 'r' || e.key === 'R') {
+      if (selectedId === null) return;
+      const dev = devices.find(d => d.id === selectedId);
+      if (!dev) return;
+      e.preventDefault();
+      dev.rot = (flowDirOf(dev) + 1) % 4;
+      recomputeAllConnections();
+      draw();
+      return;
+    }
+
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
     if (selectedConnectionId !== null) {
       e.preventDefault();
@@ -1135,6 +1340,7 @@
         gridY: spawnPreview.gridY,
         w: spawnTemplate.w,
         h: spawnTemplate.h,
+        rot: 0,
         color: spawnTemplate.color,
         borderColor: spawnTemplate.borderColor,
         label: spawnTemplate.label
