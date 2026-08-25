@@ -118,8 +118,11 @@
   Delete / Backspace：删除选中设备（相连传送带保留、断开处变为悬空端点）或删除选中传送带<br>
   设备网格重叠时会实时标红警示　|　拖动设备时，相连的传送带会实时重新寻路（A* 直角寻路，禁止重叠、交叉处生成物流桥）<br>
   点击已放置的传送带：选中　|　拖拽传送带线体：插入/移动一个途经点，自由调整路线　|　双击途经点：删除<br>
+  拖拽传送带末端箭头（已连接的输入口）：改接到同一/其它设备的另一个可用输入口，自动重新寻路<br>
+  Ctrl+Z（Mac：Cmd+Z）：撤销上一步操作，最多回退 30 步<br>
   【自由传送带模式】E：切换（光标变十字，右键退出）。仅在此模式下才能放置新传送带、自动汇流/分流<br>
-  左键点起点 A（空白格或输出口）→ 移动预览 → 左键点终点 B（空白格/输入口/已有传送带）落地<br>
+  左键点起点 A（输出口，或设备本体自动选最近可用输出口，或空白格）→ 移动预览 → 左键点终点 B（输入口/已有传送带/设备本体自动选最近可用输入口/空白格）落地<br>
+  输入口不能作为起点、输出口不能作为终点，误点会有光标提示且不会中断画线<br>
   终点落在已有传送带上：自动插入汇流器（Merger，3 进 1 出）<br>
   Alt+左键点击已有传送带（任意模式下）：原地生成分流器（Splitter，1 进 3 出）并自动进入自由模式拉出新分支
 </div>
@@ -172,10 +175,21 @@
   // 用于分流器新分支的起点)
   let freeBeltStart = null;
   let freeBeltPreviewPts = null; // 实时预览折线(世界坐标点数组)，随鼠标移动重算
+  let freeBeltHoverDeviceId = null; // 悬停在某设备本体(非精确端口)上时高亮该设备
 
   // ---- 手动调整传送带路径(途经点)的状态 ----
   let draggingWaypoint = null; // { connId, index }
   let pendingWaypointCreate = null; // { connId, segmentIndex, downX, downY }：按下但未确认是否为拖拽
+
+  // ---- 普通模式下拖拽已有传送带的输入端重新接线 ----
+  let endpointDrag = null; // { connId, originalToDeviceId, originalToPort }
+
+  // ---- 光标旁的轻量提示(如"无法选择输入口作为起点") ----
+  let cursorTooltip = null; // { text, x, y, until }
+
+  // ---- 撤销历史(Ctrl+Z / Cmd+Z)：每次修改画布数据的操作前保存一份快照 ----
+  const HISTORY_LIMIT = 30;
+  let history = [];
 
   // ---- 画布内交互状态 ----
   let isPanning = false;
@@ -192,6 +206,57 @@
   let spawning = false;
   const spawnTemplate = { w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' };
   let spawnPreview = null; // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
+
+  function cloneCanvasState() {
+    return {
+      devices: JSON.parse(JSON.stringify(devices)),
+      connections: JSON.parse(JSON.stringify(connections)),
+      nextId,
+      nextConnId
+    };
+  }
+
+  // 在任何会修改设备/连线数据的操作开始前调用，把"操作前"的状态压入历史栈，
+  // 这样 Ctrl+Z 才能精确回退到该操作之前。栈满 30 条时丢弃最旧的一条。
+  function pushHistory() {
+    history.push(cloneCanvasState());
+    if (history.length > HISTORY_LIMIT) history.shift();
+  }
+
+  function undo() {
+    if (!history.length) return;
+    const prev = history.pop();
+    devices = prev.devices;
+    connections = prev.connections;
+    nextId = prev.nextId;
+    nextConnId = prev.nextConnId;
+
+    // 撤销可能作用在正在进行中的交互上，统一清空所有瞬时交互状态，避免悬空引用
+    selectedId = null;
+    selectedConnectionId = null;
+    draggingDeviceId = null;
+    draggingWaypoint = null;
+    pendingWaypointCreate = null;
+    endpointDrag = null;
+    freeBeltStart = null;
+    freeBeltPreviewPts = null;
+    freeBeltHoverDeviceId = null;
+    isPanning = false;
+
+    draw();
+  }
+
+  // 光标旁的轻量提示，用于端口拉线规则被拒绝时的即时反馈，一段时间后自动消失。
+  function showCursorTooltip(text, clientX, clientY) {
+    const until = performance.now() + 1400;
+    cursorTooltip = { text, x: clientX, y: clientY, until };
+    setTimeout(() => {
+      if (cursorTooltip && cursorTooltip.until === until) {
+        cursorTooltip = null;
+        draw();
+      }
+    }, 1450);
+  }
 
   function resize() {
     canvas.width = window.innerWidth * devicePixelRatio;
@@ -632,6 +697,18 @@
     return best;
   }
 
+  // 按格子曼哈顿距离选最近端口(不寻路)。用于"点在设备本体上"的兜底选择：
+  // 此时参照点(点击处)本身落在设备footprint内部、是被阻挡的格子，无法用 A*
+  // 计算路径距离，因此改用几何距离——这也更符合"点哪就选哪一侧端口"的直觉。
+  function pickNearestPortByDistance(candidates, refCol, refRow) {
+    let best = null, bestDist = Infinity;
+    for (const port of candidates) {
+      const d = Math.abs(port.cellCol - refCol) + Math.abs(port.cellRow - refRow);
+      if (d < bestDist) { bestDist = d; best = port; }
+    }
+    return best;
+  }
+
   // 计算一条连线从起点到终点的最佳直角路径。起点/终点既可以是设备端口
   // (钢体的固定朝向输出/输入口，或汇流器/分流器某条边上的端口)，也可以是
   // 不属于任何设备的自由网格端点(conn.fromCell/toCell)，此时不限制笔直方向。
@@ -905,6 +982,13 @@
       ctx.setLineDash([]);
     }
 
+    // 自由传送带模式下悬停在设备本体(非精确端口)上：高亮提示"点击即可自动接入最近端口"
+    if (opts.freeBeltHover) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(102, 187, 106, 0.9)';
+      ctx.strokeRect(topLeft.x - 2, topLeft.y - 2, sw + 4, sh + 4);
+    }
+
     // 标签
     if (sw > 24 && sh > 16) {
       ctx.globalAlpha = 1;
@@ -926,7 +1010,8 @@
       drawDeviceRect(rect, dev, {
         dragging: dev.id === draggingDeviceId,
         colliding: collidingIds.has(dev.id),
-        selected: dev.id === selectedId
+        selected: dev.id === selectedId,
+        freeBeltHover: dev.id === freeBeltHoverDeviceId
       });
       drawDevicePorts(dev, pos);
     }
@@ -1203,6 +1288,29 @@
     ctx.restore();
   }
 
+  // 光标旁的轻量文字提示(如拉线规则被拒绝时的原因说明)
+  function drawCursorTooltip() {
+    if (!cursorTooltip) return;
+    if (performance.now() > cursorTooltip.until) { cursorTooltip = null; return; }
+    ctx.save();
+    ctx.font = '12px system-ui, sans-serif';
+    const paddingX = 8, h = 24;
+    const textWidth = ctx.measureText(cursorTooltip.text).width;
+    const w = textWidth + paddingX * 2;
+    const x = cursorTooltip.x + 14, y = cursorTooltip.y - h - 12;
+    ctx.fillStyle = 'rgba(20, 20, 20, 0.92)';
+    ctx.strokeStyle = '#ff7043';
+    ctx.lineWidth = 1;
+    roundRectPathAt(x, y, w, h, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#ffcc80';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cursorTooltip.text, x + paddingX, y + h / 2);
+    ctx.restore();
+  }
+
   function draw() {
     drawGrid();
     drawConnections();
@@ -1210,72 +1318,128 @@
     drawWaypoints();
     drawSpawnPreview();
     drawFreeBeltPreview();
+    drawCursorTooltip();
   }
 
   // ---- 自由传送带模式：状态解析、实时预览与落地逻辑 ----
 
-  // 起点(A)是否落在合法位置：空白网格，或尚未被占用的输出口。
-  // 点在设备本体(非端口)或已有传送带上均视为无效点击，此阶段忽略不处理。
+  // 把 freeBeltStart 解析为寻路用的具体 (col,row,dir)。kind='anyOutput' 时，
+  // 在该设备当前空闲的输出口中，按到 (towardCol,towardRow) 代价最小挑选。
+  function resolveFreeBeltStartForPathing(towardCol, towardRow, blocked, beltOccupancy) {
+    if (!freeBeltStart) return null;
+    if (freeBeltStart.kind === 'free') return { col: freeBeltStart.col, row: freeBeltStart.row, dir: null };
+    const dev = devices.find(d => d.id === freeBeltStart.deviceId);
+    if (!dev) return null;
+    const pos = effectiveGridPos(dev);
+    if (freeBeltStart.kind === 'port') {
+      const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === freeBeltStart.port);
+      return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir } : null;
+    }
+    const avail = getDevicePorts(dev, pos).outputs.filter(p => !isOutputPortUsed(dev.id, p.index));
+    const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, beltOccupancy);
+    return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir } : null;
+  }
+
+  // 起点(A)点击优先级：
+  //  1) 精确点在某个未占用的输出口上 → 直接用该端口
+  //  2) 精确点在输入口上 → 严格禁止从输入口拉线，提示并取消
+  //  3) 点在设备本体(非精确端口)上 → 兜底，自动选离点击处最近的可用输出口
+  //  4) 点在已有传送带上 → 此阶段不处理(生成分流器走 Alt+点击)
+  //  5) 其余视为空白网格起点
   function resolveFreeBeltStartClick(clientX, clientY) {
     const port = findPortAt(clientX, clientY, 'output');
     if (port) {
       if (isOutputPortUsed(port.deviceId, port.index)) return null;
       return { kind: 'port', deviceId: port.deviceId, port: port.index };
     }
+    const inPort = findPortAt(clientX, clientY, 'input');
+    if (inPort) {
+      showCursorTooltip('无法选择输入口作为起点', clientX, clientY);
+      return null;
+    }
     const worldPos = screenToWorld(clientX, clientY);
-    if (hitTestDevice(worldPos.x, worldPos.y)) return null;
+    const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+    if (hitDev) {
+      const pos = effectiveGridPos(hitDev);
+      const avail = getDevicePorts(hitDev, pos).outputs.filter(p => !isOutputPortUsed(hitDev.id, p.index));
+      if (avail.length === 0) return null;
+      const cell = worldToCell(worldPos.x, worldPos.y);
+      const best = pickNearestPortByDistance(avail, cell.col, cell.row);
+      if (!best) return null;
+      return { kind: 'port', deviceId: hitDev.id, port: best.index };
+    }
     if (hitTestConnection(clientX, clientY)) return null;
     const cell = worldToCell(worldPos.x, worldPos.y);
     return { kind: 'free', col: cell.col, row: cell.row };
   }
 
-  // 终点(B)：未被占用的输入口 / 已有传送带上的一格(触发自动汇流) / 空白网格。
+  // 终点(B)点击优先级：
+  //  1) 精确点在某个未占用的输入口上 → 直接用该端口
+  //  2) 精确点在输出口上 → 严格禁止把输出口当终点，提示并保持预览状态(不结束画线)
+  //  3) 点在已有传送带上 → 触发自动汇流
+  //  4) 点在设备本体(非精确端口)上 → 兜底，自动选离起点 A 最近的可用输入口
+  //  5) 其余视为空白网格终点
   function resolveFreeBeltEndClick(clientX, clientY) {
     const port = findPortAt(clientX, clientY, 'input');
     if (port) {
       if (isInputPortUsed(port.deviceId, port.index)) return null;
       return { kind: 'port', deviceId: port.deviceId, port: port.index };
     }
+    const outPort = findPortAt(clientX, clientY, 'output');
+    if (outPort) {
+      showCursorTooltip('无法选择输出口作为终点', clientX, clientY);
+      return null;
+    }
+    // 设备本体优先于传送带：落点若在某个已有设备(含汇流器/分流器节点)的
+    // footprint 内，一律按设备本体兜底逻辑处理，避免设备正下方/内部残留的
+    // 传送带线段抢先命中，导致点击已有汇流器节点添加输入时被误判为再次点击
+    // 传送带本身。
+    const worldPos = screenToWorld(clientX, clientY);
+    const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+    if (hitDev) {
+      const pos = effectiveGridPos(hitDev);
+      const avail = getDevicePorts(hitDev, pos).inputs.filter(p => !isInputPortUsed(hitDev.id, p.index));
+      if (avail.length === 0) return null;
+      const blocked = buildBlockedSet();
+      const beltOccupancy = buildBeltOccupancy(null);
+      // 用第一个候选输入口的外侧格子(必定在设备footprint之外、不会被阻挡)作为
+      // 解析起点(尤其是分流器 anyOutput 起点)时的寻路参照，而不是设备本体的
+      // 原点格(那格本身就在设备footprint内部，会被当成障碍导致寻路失败)。
+      const startResolved = resolveFreeBeltStartForPathing(avail[0].cellCol, avail[0].cellRow, blocked, beltOccupancy);
+      const refCol = startResolved ? startResolved.col : pos.gridX;
+      const refRow = startResolved ? startResolved.row : pos.gridY;
+      const refDir = startResolved ? startResolved.dir : null;
+      const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, beltOccupancy);
+      if (!best) return null;
+      return { kind: 'port', deviceId: hitDev.id, port: best.index };
+    }
     const belt = hitTestConnection(clientX, clientY);
     if (belt) return { kind: 'merge', conn: belt.conn };
-    const worldPos = screenToWorld(clientX, clientY);
-    if (hitTestDevice(worldPos.x, worldPos.y)) return null;
     const cell = worldToCell(worldPos.x, worldPos.y);
     return { kind: 'free', col: cell.col, row: cell.row };
   }
 
   // 鼠标每次移动都重算一次"起点 A → 当前悬停格"的 A* 预览路径(终点方向不限，
-  // 仅供预览；真正落地时才会按终点自身的方向要求精确寻路)。
+  // 仅供预览；真正落地时才会按终点自身的方向要求精确寻路)。同时更新设备本体
+  // 悬停高亮：只在鼠标没有精确落在某个端口上、但落在设备本体上时高亮。
   function updateFreeBeltPreview(hoverClientX, hoverClientY) {
     freeBeltPreviewPts = null;
-    if (!freeBeltMode || !freeBeltStart) return;
     const worldPos = screenToWorld(hoverClientX, hoverClientY);
+    if (!findPortAt(hoverClientX, hoverClientY, 'output') && !findPortAt(hoverClientX, hoverClientY, 'input')) {
+      const hovered = hitTestDevice(worldPos.x, worldPos.y);
+      freeBeltHoverDeviceId = hovered ? hovered.id : null;
+    } else {
+      freeBeltHoverDeviceId = null;
+    }
+    if (!freeBeltMode || !freeBeltStart) return;
     const hoverCell = worldToCell(worldPos.x, worldPos.y);
     const blocked = buildBlockedSet();
     const beltOccupancy = buildBeltOccupancy(null);
 
-    let startCol, startRow, startDir;
-    if (freeBeltStart.kind === 'free') {
-      startCol = freeBeltStart.col; startRow = freeBeltStart.row; startDir = null;
-    } else {
-      const dev = devices.find(d => d.id === freeBeltStart.deviceId);
-      if (!dev) return;
-      const pos = effectiveGridPos(dev);
-      if (freeBeltStart.kind === 'port') {
-        const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === freeBeltStart.port);
-        if (!p) return;
-        startCol = p.cellCol; startRow = p.cellRow; startDir = p.dir;
-      } else {
-        // anyOutput：分流器新分支的起点，具体端口留到落地时挑选，预览阶段先按
-        // 到当前悬停格代价最小的空闲输出口试算
-        const avail = getDevicePorts(dev, pos).outputs.filter(p => !isOutputPortUsed(dev.id, p.index));
-        const best = pickBestPort(avail, hoverCell.col, hoverCell.row, null, true, blocked, beltOccupancy);
-        if (!best) return;
-        startCol = best.cellCol; startRow = best.cellRow; startDir = best.dir;
-      }
-    }
+    const startResolved = resolveFreeBeltStartForPathing(hoverCell.col, hoverCell.row, blocked, beltOccupancy);
+    if (!startResolved) return;
 
-    const cellPath = aStarOrthogonal(startCol, startRow, startDir, hoverCell.col, hoverCell.row, null, blocked, beltOccupancy);
+    const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, beltOccupancy);
     if (!cellPath) return;
     const cleaned = removeSelfOverlap(cellPath);
     freeBeltPreviewPts = cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE }));
@@ -1285,6 +1449,7 @@
   // (分流器新分支时在空闲输出口中挑选最短路的一个)，最后生成正式连线。
   function finalizeFreeBeltConnection(endResolved, clientX, clientY) {
     if (!freeBeltStart || !endResolved) return;
+    pushHistory();
 
     const blocked = buildBlockedSet();
     const beltOccupancy = buildBeltOccupancy(null);
@@ -1381,6 +1546,7 @@
     const hit = cellOrientationsOf(hostConn.cellPath, hostConn.startDir, hostConn.goalDir)
       .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
     if (!hit) return false;
+    pushHistory();
     const splitter = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'splitter');
     freeBeltMode = true;
     freeBeltStart = { kind: 'anyOutput', deviceId: splitter.id };
@@ -1419,8 +1585,29 @@
       return;
     }
 
+    // 普通模式下，按住已连接的输入口(传送带末端箭头)可以把这段线的末端拖到
+    // 该设备或画面上其它设备的另一个可用输入口上，实时重新寻路(Endpoint Re-attach)。
+    const inPortHit = findPortAt(e.clientX, e.clientY, 'input');
+    if (inPortHit && isInputPortUsed(inPortHit.deviceId, inPortHit.index)) {
+      const conn = connections.find(c => c.toDeviceId === inPortHit.deviceId && c.toPort === inPortHit.index);
+      if (conn) {
+        pushHistory();
+        endpointDrag = { connId: conn.id, originalToDeviceId: conn.toDeviceId, originalToPort: conn.toPort };
+        conn.toDeviceId = null;
+        conn.toPort = null;
+        const dropWorld = screenToWorld(e.clientX, e.clientY);
+        conn.toCell = worldToCell(dropWorld.x, dropWorld.y);
+        recomputeAllConnections();
+        selectedConnectionId = conn.id;
+        selectedId = null;
+        draw();
+        return;
+      }
+    }
+
     const wpHit = hitTestWaypoint(e.clientX, e.clientY);
     if (wpHit) {
+      pushHistory();
       draggingWaypoint = wpHit;
       selectedId = null;
       selectedConnectionId = wpHit.connId;
@@ -1432,6 +1619,7 @@
     const hit = hitTestDevice(worldPos.x, worldPos.y);
 
     if (hit) {
+      pushHistory();
       selectedId = hit.id;
       selectedConnectionId = null;
       draggingDeviceId = hit.id;
@@ -1468,6 +1656,7 @@
     if (!wpHit) return;
     const conn = connections.find(c => c.id === wpHit.connId);
     if (conn && conn.waypoints) {
+      pushHistory();
       conn.waypoints.splice(wpHit.index, 1);
       recomputeAllConnections();
       draw();
@@ -1481,15 +1670,27 @@
     freeBeltMode = false;
     freeBeltStart = null;
     freeBeltPreviewPts = null;
+    freeBeltHoverDeviceId = null;
     canvas.style.cursor = 'default';
     draw();
   });
 
   window.addEventListener('mousemove', (e) => {
     if (freeBeltMode) {
-      if (freeBeltStart) updateFreeBeltPreview(e.clientX, e.clientY);
+      // 无论是否已选定起点 A，都要实时更新设备本体悬停高亮；已选定 A 时还要更新路径预览
+      updateFreeBeltPreview(e.clientX, e.clientY);
       canvas.style.cursor = 'crosshair';
       draw();
+      return;
+    }
+    if (endpointDrag) {
+      const conn = connections.find(c => c.id === endpointDrag.connId);
+      if (conn) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        conn.toCell = worldToCell(worldPos.x, worldPos.y);
+        recomputeAllConnections();
+        draw();
+      }
       return;
     }
     if (draggingWaypoint) {
@@ -1507,6 +1708,7 @@
       if (dx * dx + dy * dy > 16) {
         const conn = connections.find(c => c.id === pendingWaypointCreate.connId);
         if (conn) {
+          pushHistory();
           const worldPos = screenToWorld(e.clientX, e.clientY);
           const cell = worldToCell(worldPos.x, worldPos.y);
           if (!conn.waypoints) conn.waypoints = [];
@@ -1543,6 +1745,47 @@
   });
 
   window.addEventListener('mouseup', (e) => {
+    if (endpointDrag) {
+      const conn = connections.find(c => c.id === endpointDrag.connId);
+      if (conn) {
+        // 优先精确端口；否则兜底落在设备本体上时自动选离起点最近的可用输入口；
+        // 都不满足(或落在传送带自身的源设备上，避免自环)则还原到原来的输入口。
+        let target = null;
+        const portHit = findPortAt(e.clientX, e.clientY, 'input');
+        if (portHit && !isInputPortUsed(portHit.deviceId, portHit.index) && portHit.deviceId !== conn.fromDeviceId) {
+          target = { deviceId: portHit.deviceId, index: portHit.index };
+        } else {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+          if (hitDev && hitDev.id !== conn.fromDeviceId) {
+            const pos = effectiveGridPos(hitDev);
+            const avail = getDevicePorts(hitDev, pos).inputs.filter(p => !isInputPortUsed(hitDev.id, p.index));
+            if (avail.length) {
+              const blocked = buildBlockedSet();
+              const beltOccupancy = buildBeltOccupancy(conn.id);
+              const fromResolved = resolveConnEndpoint(conn.fromDeviceId, conn.fromPort, conn.fromCell, true);
+              const best = fromResolved
+                ? pickBestPort(avail, fromResolved.cellCol, fromResolved.cellRow, fromResolved.dir, false, blocked, beltOccupancy)
+                : avail[0];
+              if (best) target = { deviceId: hitDev.id, index: best.index };
+            }
+          }
+        }
+        if (target) {
+          conn.toDeviceId = target.deviceId;
+          conn.toPort = target.index;
+          conn.toCell = null;
+        } else {
+          conn.toDeviceId = endpointDrag.originalToDeviceId;
+          conn.toPort = endpointDrag.originalToPort;
+          conn.toCell = null;
+        }
+        recomputeAllConnections();
+      }
+      endpointDrag = null;
+      draw();
+      return;
+    }
     if (draggingWaypoint) {
       draggingWaypoint = null;
       draw();
@@ -1585,16 +1828,24 @@
   // ---- 键盘：删除 / 旋转 ----
 
   window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      undo();
+      return;
+    }
+
     if (e.key === 'e' || e.key === 'E') {
       e.preventDefault();
       freeBeltMode = !freeBeltMode;
       freeBeltStart = null;
       freeBeltPreviewPts = null;
+      freeBeltHoverDeviceId = null;
       if (freeBeltMode) {
         // 进入布线模式即为独占工具：清掉其它可能残留的交互状态
         draggingWaypoint = null;
         pendingWaypointCreate = null;
         draggingDeviceId = null;
+        endpointDrag = null;
         isPanning = false;
         selectedId = null;
         selectedConnectionId = null;
@@ -1612,6 +1863,7 @@
       // 汇流器/分流器的朝向由被切入的原传送带决定，不支持手动旋转
       if (!dev || (dev.kind && dev.kind !== 'crusher')) return;
       e.preventDefault();
+      pushHistory();
       dev.rot = (flowDirOf(dev) + 1) % 4;
       recomputeAllConnections();
       draw();
@@ -1621,11 +1873,13 @@
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
     if (selectedConnectionId !== null) {
       e.preventDefault();
+      pushHistory();
       connections = connections.filter(c => c.id !== selectedConnectionId);
       selectedConnectionId = null;
       draw();
     } else if (selectedId !== null) {
       e.preventDefault();
+      pushHistory();
       // 删除设备只移除设备本身：与它相连的传送带保留下来，端点改为设备原先
       // 所在端口紧邻的那格自由网格端点，成为一段悬空的传送带，仍可在普通模式下
       // 选中/删除，或拖拽途经点调整。
@@ -1699,6 +1953,7 @@
     ghostIcon.style.display = 'none';
 
     if (spawnPreview && !isPointInToolbar(e.clientX, e.clientY)) {
+      pushHistory();
       const newDevice = {
         id: nextId++,
         gridX: spawnPreview.gridX,
