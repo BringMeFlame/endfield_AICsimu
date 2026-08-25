@@ -106,7 +106,9 @@ export function buildBeltOccupancy(excludeConnId) {
 // 进入终点格(真正的输入口要求笔直接入)。
 // beltOccupancy 记录其它传送带占用的格子及朝向：同朝向直行视为重叠(禁止)，
 // 仅垂直方向穿过视为合法交叉(允许，渲染时生成物流桥)；已被占用的格子内不允许转弯。
-export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy) {
+// allowDockingTurn(默认 false)：见下方 aStarWithDockingFallback 的说明，仅在那里
+// 以 true 传入，用于兜底允许"从侧面拐入端口前一格"。
+export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy, allowDockingTurn) {
   if (startCol === goalCol && startRow === goalRow) {
     return [{ col: startCol, row: startRow }];
   }
@@ -131,16 +133,26 @@ export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, 
       if (closed.has(node.key)) continue;
       closed.add(node.key);
 
-      if (node.col === goalCol && node.row === goalRow && (goalDir === null || node.dir === goalDir)) {
-        const path = [];
-        let curKey = node.key;
-        while (curKey) {
-          const [c, r] = curKey.split(',').map(Number);
-          path.push({ col: c, row: r });
-          curKey = cameFrom.get(curKey);
+      if (node.col === goalCol && node.row === goalRow) {
+        const enteredStraight = goalDir === null || node.dir === goalDir;
+        // 兜底：允许从侧面拐入端口前一格，最后半格"贴边"进入端口的线段固定沿
+        // goalDir 画(见 computePath 里 pts.push(endPort) 那一段)，所以视觉上入口
+        // 依旧是笔直对接，只是引导它的那一小段路径拐了个弯。安全性上仍然要求这
+        // 一格没有被其它传送带占用(和普通转弯"落脚格必须空闲"的规则保持一致)，
+        // 避免这个隐式的对接线段和别的直行传送带在同一格重叠。
+        const goalCellOcc = beltOccupancy.get(node.col + ',' + node.row);
+        const canDockFromSide = !enteredStraight && allowDockingTurn && !(goalCellOcc && goalCellOcc.size > 0);
+        if (enteredStraight || canDockFromSide) {
+          const path = [];
+          let curKey = node.key;
+          while (curKey) {
+            const [c, r] = curKey.split(',').map(Number);
+            path.push({ col: c, row: r });
+            curKey = cameFrom.get(curKey);
+          }
+          path.reverse();
+          return path;
         }
-        path.reverse();
-        return path;
       }
 
       for (let d = 0; d < 4; d++) {
@@ -173,6 +185,19 @@ export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, 
     }
   }
   return null;
+}
+
+// 端口"必须笔直接入"本身没有例外，但如果笔直进入端口所需的那一格紧贴着的
+// 邻居格恰好被别的设备整个占死(比如两台设备靠得很近、又有一点 Y 方向错位，
+// 导致端口正前方那一格所在的那一整行/列都在邻居 footprint 里)，笔直路线就
+// 物理上不存在——这不是"绕远路"能解决的，是唯一能笔直接入的那一格根本站不
+// 上去。这种情况下退化为允许拐弯贴边进入(见 aStarOrthogonal 里 allowDockingTurn
+// 分支)：先按老规矩严格寻路，找不到时才退化，因此所有原本就能笔直接入的连线
+// 行为完全不变，只有真正被卡死的场景才会多出这一条兜底路径。
+export function aStarWithDockingFallback(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy) {
+  const strict = aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy);
+  if (strict || goalDir === null) return strict;
+  return aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy, true);
 }
 
 function dedupePoints(pts) {
@@ -267,8 +292,8 @@ export function pickBestPort(candidates, otherCol, otherRow, otherDir, isCandida
   let best = null, bestLen = Infinity;
   for (const port of candidates) {
     const path = isCandidateOutput
-      ? aStarOrthogonal(port.cellCol, port.cellRow, port.dir, otherCol, otherRow, otherDir, blocked, beltOccupancy)
-      : aStarOrthogonal(otherCol, otherRow, otherDir, port.cellCol, port.cellRow, port.dir, blocked, beltOccupancy);
+      ? aStarWithDockingFallback(port.cellCol, port.cellRow, port.dir, otherCol, otherRow, otherDir, blocked, beltOccupancy)
+      : aStarWithDockingFallback(otherCol, otherRow, otherDir, port.cellCol, port.cellRow, port.dir, blocked, beltOccupancy);
     if (path && path.length < bestLen) { bestLen = path.length; best = port; }
   }
   return best;
@@ -326,7 +351,7 @@ export function computePath(conn) {
   for (let i = 0; i < checkpoints.length - 1; i++) {
     const a = checkpoints[i], b = checkpoints[i + 1];
     const hopGoalDir = i === checkpoints.length - 2 ? goalDir : null;
-    let hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
+    let hopPath = aStarWithDockingFallback(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
     if (!hopPath) { fullCellPath = null; break; }
     hopPath = removeSelfOverlap(hopPath);
     fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));
