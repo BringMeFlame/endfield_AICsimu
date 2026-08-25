@@ -1,0 +1,79 @@
+// ---- DOM 元素引用 ----
+export const canvas = document.getElementById('canvas');
+export const ctx = canvas.getContext('2d');
+export const toolbar = document.getElementById('toolbar');
+export const crusherIcon = document.getElementById('crusher-icon');
+export const ghostIcon = document.getElementById('ghost-icon');
+export const hintEl = document.getElementById('hint');
+
+// ---- 全局可变状态 ----
+// 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的
+// 变量重新赋值，所以原来"IIFE 内一个个顶层 let"的写法没法照搬到多文件场景。
+// 这里改用一个共享的可变 state 对象承载所有原本的顶层 let，各模块统一通过
+// `state.xxx = ...` 读写，语义和原来的扁平 let 完全等价，只是多了一层容器，
+// 这是 project_status.md 重构建议里提到的可选方案，在拆模块这个场景下是必须的。
+export const state = {
+  // 世界坐标系参数(相机)
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+
+  // ---- 设备数据 ----
+  // devices: { id, gridX, gridY, w, h, color, borderColor, label, kind }
+  // kind 缺省(或 'crusher')为原有 3x3 设备；'merger'/'splitter' 为 1x1 节点，
+  // 分别额外带 mainOutEdge / mainInEdge(见 nodeDevicePorts)。
+  devices: [],
+  nextId: 1,
+
+  selectedId: null,
+
+  // ---- 传送带连线数据 ----
+  // connections: { id, fromDeviceId, fromPort, fromCell, toDeviceId, toPort, toCell,
+  //                waypoints, points:[{x,y}], cellPath, startDir, goalDir, invalid }
+  // 起止端点二选一：fromDeviceId/fromPort 绑定某设备端口时 fromCell 为 null；
+  // 否则 fromCell={col,row} 表示不属于任何设备的自由网格端点。toDeviceId/toCell 同理。
+  connections: [],
+  nextConnId: 1,
+  selectedConnectionId: null,
+
+  // ---- 自由传送带模式(E 键切换)：先点起点 A，移动鼠标实时预览，再点终点 B 落地 ----
+  // 放置传送带(含自动汇流/分流)只能在此模式下进行；普通模式只能操作设备、
+  // 或删除/拖拽移动已经放好的传送带(选中整条连线、拖拽途经点)。
+  freeBeltMode: false,
+  // freeBeltStart 的 kind: 'port'(绑定某设备已知端口) | 'free'(自由网格) |
+  // 'anyOutput'(绑定某设备，但具体走哪个空闲输出口留到落地时按最短路自动挑选，
+  // 用于分流器新分支的起点)
+  freeBeltStart: null,
+  freeBeltPreviewPts: null, // 实时预览折线(世界坐标点数组)，随鼠标移动重算
+  freeBeltHoverDeviceId: null, // 悬停在某设备本体(非精确端口)上时高亮该设备
+
+  // ---- 手动调整传送带路径(途经点)的状态 ----
+  draggingWaypoint: null, // { connId, index, originalCell }：originalCell 为 null 表示这是本次拖拽
+  // 才新插入的途经点(松手时若路径无效应整体移除)，否则是拖拽开始前该途经点的 {col,row}(松手时若路径无效应还原到这个值)
+  pendingWaypointCreate: null, // { connId, segmentIndex, downX, downY }：按下但未确认是否为拖拽
+
+  // ---- 普通模式下拖拽已有传送带的输入端重新接线 ----
+  endpointDrag: null, // { connId, originalToDeviceId, originalToPort }
+
+  // ---- 光标旁的轻量提示(如"无法选择输入口作为起点") ----
+  cursorTooltip: null, // { text, x, y, until }
+
+  // ---- 撤销历史(Ctrl+Z / Cmd+Z)：每次修改画布数据的操作前保存一份快照 ----
+  history: [],
+
+  // ---- 画布内交互状态 ----
+  isPanning: false,
+  lastMouseX: 0,
+  lastMouseY: 0,
+
+  draggingDeviceId: null,
+  draggingDeviceBeforeSnapshot: null, // 拖拽开始前 pushHistory() 压入的那份快照,松手时用来判定/撤销"拖坏了别的合法连线"
+  dragOffsetWX: 0,
+  dragOffsetWY: 0,
+  dragDeviceWX: 0, // 拖拽中设备左上角的实时(已吸附)世界坐标
+  dragDeviceWY: 0,
+
+  // ---- 从工具栏拖拽生成新设备的状态 ----
+  spawning: false,
+  spawnPreview: null // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
+};

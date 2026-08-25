@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-**v0.1（初始单文件版本）**
+**v0.2（模块化 + Vite 版本）**
 
-单个 `index.html`（约 2000 行，含内联 CSS + JS），无构建工具、无依赖、无持久化。当前分支：`claude/repo-project-analysis-gz1arn`。
+原来单个 ~2000 行 `index.html`（内联 CSS + JS）已拆分为：`style.css` + `src/{constants,state,coords,devices,pathfinding,render,history,interactions,main}.js`，用 Vite 构建（`npm install && npm run dev`）。仍然无后端、无持久化。当前分支：`claude/refactor-modularization-v0bcen`。详见 CLAUDE.md 的"技术栈与依赖"一节。
 
 ## 已实现功能
 
@@ -75,9 +75,9 @@
 4. **框选 / 批量操作**：目前一次只能选中一个设备或一条传送带，批量移动/删除/旋转对搭建大型基建布局会很有用。
 5. **性能优化（增量重算）**：`recomputeAllConnections()` 每次都是对所有连线整体重跑一遍 A*，设备/连线数量上去后（几十条以上）会有明显卡顿。可以考虑只重算受影响的连线（比如只重算与被移动设备直接相连、或路径与其发生实际交集的连线）。
 
-## 重构建议
+## 重构建议（已完成，见下方"重构记录"）
 
-当前 `index.html` 已经接近 2000 行，CSS + HTML + 全部 JS 都塞在一个文件里，可读性和多人协作成本都在上升。建议的拆分方向：
+~~当前 `index.html` 已经接近 2000 行……~~ 本节原为重构前的建议，已在 `claude/refactor-modularization-v0bcen` 分支上按此方向落地，实际结构与偏差记录在下方"重构记录"一节，本节原文保留作历史参照：
 
 - **先拆 CSS**：把 `<style>` 块整体挪到独立的 `style.css`，`index.html` 里用 `<link rel="stylesheet" href="style.css">` 引入。这是收益最高、风险最低的第一步。
 - **再拆 JS，按现有代码里已经存在的分区拆模块**（分区标题已经在代码注释里划好了，直接对应文件即可）：
@@ -90,6 +90,18 @@
 - **引入 Vite** 作为开发服务器 + 打包工具，用 `<script type="module">` + ES `import`/`export` 组织上述文件，`npm run dev` 热更新会比现在手动刷新浏览器高效很多。这是目前项目里*还没有*的依赖，引入时需要新增 `package.json`。
 - 如果不想引入构建工具，退而求其次的方案是继续用 `<script type="module">` + 原生 ES Module 相对路径 import（浏览器原生支持，不需要打包），只是没有热更新和打包压缩。
 - 全局状态（一堆顶层 `let`）可以考虑收敛成一个 `state` 对象统一管理，但这是可选项，不是必须——如果只是拆文件、不改变现有"扁平 `let` + IIFE 闭包"的风格，跨模块共享状态会更麻烦（需要显式 import/export 每个变量），值得在真正动手前想清楚。
+
+### 重构记录（v0.2）
+
+- CSS 已拆到 `style.css`，逐字搬运，规则未改动。
+- JS 按建议拆成 8 个模块，另加两个建议里没提到、但技术上必需的文件：
+  - `src/constants.js`：把原本和"世界坐标系参数/端口/寻路/渲染/撤销/hint 文案"混在一起的 `UPPER_SNAKE_CASE` 常量集中到一处，`coords.js`/`devices.js`/`pathfinding.js`/`render.js`/`interactions.js` 各自按需 import。
+  - `src/state.js`：**采用了建议里的可选方案**——原因是技术上必需，不是风格偏好。ES Module 的 `import` 绑定是只读的，`import { selectedId } from './x.js'; selectedId = 1;` 这种写法在跨模块场景下直接会报错，扁平 `let` 没法照搬到多文件。于是把原来所有顶层 `let` 收进一个共享的可变 `state` 对象，各模块用 `state.xxx = ...` 读写；`canvas`/`ctx`/`toolbar`/`crusherIcon`/`ghostIcon`/`hintEl` 这几个 DOM 引用因为不会被 `undo()` 之类逻辑重置，作为独立的具名 `export` 留在 `state.js` 里，没有塞进 `state` 对象。
+  - `src/main.js`：入口模块，做 `resize()`/`initView()`/`initInteractions()`/首次 `draw()` 的启动编排，原代码里这部分散落在 IIFE 末尾几行 + `window.addEventListener('resize', ...)`。
+- 模块间依赖是单向无环的：`interactions.js → {history, render, pathfinding, devices, coords, state, constants}`，`render.js`/`pathfinding.js` → `{devices, coords, state, constants}`，`devices.js`/`coords.js` → `{state, constants}`，`history.js → {render, state, constants}`。没有出现需要用延迟 import 或事件总线绕开的循环依赖。
+- 用 Vite 8.x（初次 `npm install` 装的 5.4 有 esbuild 开发服务器的已知 CORS 漏洞，升级到最新大版本后 `npm audit` 0 漏洞）。`package.json` 提供 `dev`/`build`/`preview` 三个脚本，`node_modules/`、`dist/` 已加入 `.gitignore`。
+- 验证方式：`npm run build` 走通生产打包（13 个模块正确 tree-shake/打包成一个 chunk）；用 Playwright（本机预装的 Chromium）跑通了设备生成、选中、`R` 旋转、`E` 进入自由传送带模式画线、A* 精确端口直连、拖拽途经点绕出 U 形绕行、Alt+左键生成分流器、`Ctrl+Z` 撤销等交互路径，浏览器控制台无报错（除了浏览器自动请求 `favicon.ico` 的良性 404，原单文件版本同样会有这个请求）。
+- 重构中发现并修复了一处真实笔误：`render.js` 里一度把 `ctx`（Canvas 2D 上下文）误写成 `state.ctx`——但 `ctx` 是 `state.js` 里独立的具名 `export`，不是 `state` 对象的属性，导致所有 `drawXxx` 函数报 `Cannot read properties of undefined (reading 'clearRect')`。已改为直接 `import { ctx } from './state.js'` 并统一使用 `ctx`。这不是行为变更，只是模块拆分引入又修复的笔误，记在这里避免以后重复踩坑。
 
 ## 已知 Bug / 待优化事项
 

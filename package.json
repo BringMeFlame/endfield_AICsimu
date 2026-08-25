@@ -1,0 +1,15 @@
+{
+  "name": "endfield-aicsimu",
+  "private": true,
+  "version": "0.1.0",
+  "description": "《明日方舟：终末地》风格的极简基建布局模拟器",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.2.2"
+  }
+}
