@@ -250,6 +250,32 @@
     draw();
   }
 
+  // 撤销"这一步会牵连破坏其它连线"的一次性操作：生成分流器/汇流器这类操作会在
+  // 画布上放一个新的 1x1 设备，这个设备占的格子如果正好是另一条连线本来合法穿过
+  // (直行或物流桥交叉)的地方，`recomputeAllConnections()` 就可能让那条本来正常
+  // 的连线突然找不到路而变 invalid——但从用户视角看，他们只是在别处分了个流，
+  // 两条路径压根没有冲突，这属于操作的副作用，不该被默默接受。这类操作要么整
+  // 体成功、要么整体不算数，所以复用 pushHistory() 刚压入的"操作前"快照直接还
+  // 原，并且不占用 Ctrl+Z 历史(用户角度这次操作根本没有发生)。调用者负责在还
+  // 原后重置自己的局部/交互状态。
+  function revertLastHistoryStep() {
+    if (!history.length) return;
+    const prev = history.pop();
+    devices = prev.devices;
+    connections = prev.connections;
+    nextId = prev.nextId;
+    nextConnId = prev.nextConnId;
+  }
+
+  // 判断这次操作是否把某条"操作前就存在、且当时合法"的连线变成了 invalid(不
+  // 关心操作本身新生成的连线是否 invalid——比如自由传送带模式画一条到不可达位
+  // 置的新线，维持现有的"画出来、留给用户后续调整"行为，不在这里连带撤销)。
+  function brokeExistingValidConnection(beforeSnapshot) {
+    const beforeIds = new Set(beforeSnapshot.connections.map(c => c.id));
+    const beforeInvalidIds = new Set(beforeSnapshot.connections.filter(c => c.invalid).map(c => c.id));
+    return connections.some(c => beforeIds.has(c.id) && !beforeInvalidIds.has(c.id) && c.invalid);
+  }
+
   // 光标旁的轻量提示，用于端口拉线规则被拒绝时的即时反馈，一段时间后自动消失。
   function showCursorTooltip(text, clientX, clientY) {
     const until = performance.now() + 1400;
@@ -754,6 +780,15 @@
       { col: endPort.cellCol, row: endPort.cellRow }
     ];
 
+    // 注意：这里绝对不能对拼接后的完整路径整体做 removeSelfOverlap 去"截断"路径
+    // (那是修过的真实 bug："拖不动"：截断会把用户故意拖出来的折返造型连同
+    // 途经点效果一起吃掉，详见 git log 里 `fix: waypoint drag no longer erases
+    // itself`)。但传送带物理上也不能自我重叠——所以正确的做法不是"算完再拒绝"，
+    // 而是让后面的跳一开始就知道前面的跳已经用过哪些格子：从第二跳起，把前面
+    // 所有跳走过的格子临时并入 blocked，逼 A* 在"确实需要往回走"的位置改为绕
+    // 一圈找一条不重叠的路(比如以途经点为中心绕出一个 U 形)，而不是走代价更
+    // 低、但会原路重叠的直线。只有当绕行也无路可走(比如被四周设备完全围死)时，
+    // 这一跳才会真的返回 null，落到下面"找不到路径"的红色警示分支。
     let fullCellPath = null;
     let curDir = startDir;
     for (let i = 0; i < checkpoints.length - 1; i++) {
@@ -764,23 +799,15 @@
       hopPath = removeSelfOverlap(hopPath);
       fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));
       if (hopPath.length >= 2) curDir = dirBetween(hopPath[hopPath.length - 2], hopPath[hopPath.length - 1]);
+      for (const c of hopPath) blocked.add(c.col + ',' + c.row);
     }
 
     if (!fullCellPath) {
       return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, startDir, goalDir, invalid: true };
     }
-    // 注意：这里不能再对拼接后的完整路径整体做 removeSelfOverlap 去"截断"路径。
-    // 每一跳自己的 A* 结果已经在上面单独去重过(消除了该跳自身因方向约束产生的
-    // "多凸出一格再掉头"伪影)；但当路径带有手动途经点时，后一跳为了从途经点绕
-    // 回终点，在几何上完全可能需要经过前一跳已经用过的格子(比如途经点被拖到
-    // 终点的"反方向"时)。截断会把这段折返连同途经点的效果一起吃掉，导致拖动
-    // 途经点时传送带看起来"纹丝不动"(拖不动 bug)。
-    //
-    // 但"不截断"不代表"允许"：传送带物理上不能自我重叠(同一段带子不能同时
-    // 表示两个方向的物料流动)，所以这里只做只读检测——一旦发现拼接后的完整
-    // 路径经过了同一个格子两次，就整体判定为 invalid，用现有的"无法找到路径"
-    // 红色警示渲染出来，交给拖拽结束(mouseup)时的还原逻辑把这次改动撤销，而不
-    // 是悄悄把它当成合法路径画出来，或者反过来粗暴截断掉用户的操作。
+    // 上面逐跳把已走过的格子并入 blocked 之后，拼接出来的完整路径按构造就不可能
+    // 自我重叠了；这里仍然保留一次只读校验作为兜底(不影响任何合法路径，纯粹是
+    // 防止后续改动这块逻辑时不小心破坏了这个不变量却没人发现)。
     if (hasSelfOverlap(fullCellPath)) {
       const previewPts = [{ x: startPort.x, y: startPort.y }];
       for (const c of fullCellPath) {
@@ -1490,6 +1517,7 @@
   function finalizeFreeBeltConnection(endResolved, clientX, clientY) {
     if (!freeBeltStart || !endResolved) return;
     pushHistory();
+    const beforeSnapshot = history[history.length - 1];
 
     const blocked = buildBlockedSet();
     const beltOccupancy = buildBeltOccupancy(null);
@@ -1571,6 +1599,14 @@
     freeBeltStart = null;
     freeBeltPreviewPts = null;
     recomputeAllConnections();
+    // 新分支落地(尤其是终点落在既有传送带上、自动生成汇流器节点时)可能连带把
+    // 某条本来正常的旧连线挤成 invalid——这条新连线自己是否 invalid 不受影响
+    // (维持"画到不可达位置、留给用户后续调整"的既有行为)，但绝不能让这次操作
+    // 顺手弄坏一条别的、原本合法的连线，所以整体撤销、退回操作前的状态。
+    if (brokeExistingValidConnection(beforeSnapshot)) {
+      revertLastHistoryStep();
+      selectedConnectionId = null;
+    }
     draw();
   }
 
@@ -1587,7 +1623,12 @@
       .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
     if (!hit) return false;
     pushHistory();
+    const beforeSnapshot = history[history.length - 1];
     const splitter = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'splitter');
+    if (brokeExistingValidConnection(beforeSnapshot)) {
+      revertLastHistoryStep();
+      return false;
+    }
     freeBeltMode = true;
     freeBeltStart = { kind: 'anyOutput', deviceId: splitter.id };
     freeBeltPreviewPts = null;
