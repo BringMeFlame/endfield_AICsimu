@@ -201,6 +201,7 @@
   let lastMouseY = 0;
 
   let draggingDeviceId = null;
+  let draggingDeviceBeforeSnapshot = null; // 拖拽开始前 pushHistory() 压入的那份快照,松手时用来判定/撤销"拖坏了别的合法连线"
   let dragOffsetWX = 0;
   let dragOffsetWY = 0;
   let dragDeviceWX = 0; // 拖拽中设备左上角的实时(已吸附)世界坐标
@@ -239,6 +240,7 @@
     selectedId = null;
     selectedConnectionId = null;
     draggingDeviceId = null;
+    draggingDeviceBeforeSnapshot = null;
     draggingWaypoint = null;
     pendingWaypointCreate = null;
     endpointDrag = null;
@@ -1704,6 +1706,7 @@
 
     if (hit) {
       pushHistory();
+      draggingDeviceBeforeSnapshot = history[history.length - 1];
       selectedId = hit.id;
       selectedConnectionId = null;
       draggingDeviceId = hit.id;
@@ -1906,9 +1909,17 @@
         dev.gridX = Math.round(dragDeviceWX / GRID_SIZE);
         dev.gridY = Math.round(dragDeviceWY / GRID_SIZE);
         recomputeAllConnections();
+        // 落位后如果把某条操作前合法的连线拖成 invalid(哪怕设备本身跟那条连线
+        // 毫不相干，只是新位置挤占/绕开了它寻路需要用到的格子)，不接受这次移动，
+        // 整体还原回拖拽前的位置和连线状态——设备重叠仍然只是警示、不阻挡放置，
+        // 这里只管"别的连线被顺手拖坏"这一种情况。
+        if (draggingDeviceBeforeSnapshot && brokeExistingValidConnection(draggingDeviceBeforeSnapshot)) {
+          revertLastHistoryStep();
+        }
       }
     }
     draggingDeviceId = null;
+    draggingDeviceBeforeSnapshot = null;
     isPanning = false;
     canvas.style.cursor = 'default';
     draw();
@@ -1949,6 +1960,7 @@
         draggingWaypoint = null;
         pendingWaypointCreate = null;
         draggingDeviceId = null;
+        draggingDeviceBeforeSnapshot = null;
         endpointDrag = null;
         isPanning = false;
         selectedId = null;

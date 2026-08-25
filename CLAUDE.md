@@ -73,7 +73,7 @@
 - 任何会修改 `devices`/`connections`/`nextId`/`nextConnId` 的操作，**必须**在修改前调用一次 `pushHistory()`（参考现有所有调用点：设备生成/删除/拖拽落位、旋转、传送带生成/删除/汇流/分流、途经点插入/删除、端点重接）。漏掉会导致 Ctrl+Z 撤销不到这一步。
 - 设备/传送带的增删改之后，只要可能影响到已有连线的路径，就要调用 `recomputeAllConnections()` 全量重算（当前实现就是全量重算，没有做增量优化，详见 `project_status.md` 的性能相关待办）。
 - 新增一种设备"kind"（目前只有默认的 3×3 `crusher` 和 1×1 的 `merger`/`splitter`）时，端口计算要在 `getDevicePorts()` 里按 `kind` 分派，不要在别处对 `kind` 做散落的 if 判断。
-- **任何一次性操作都不能顺手弄坏一条别的、操作前还合法的连线**：`splitConnectionAtCell()`（生成汇流器/分流器）会放一个新的 1×1 设备，这个设备占的格子如果正好是另一条连线本来合法穿过（直行或物流桥交叉）的地方，`recomputeAllConnections()` 可能让那条连线突然变 `invalid`——但用户视角里两条路径根本没有冲突。`createSplitterAtClick()` 和 `finalizeFreeBeltConnection()` 的 `merge` 分支在调用 `splitConnectionAtCell()` 之后，都要用 `brokeExistingValidConnection(beforeSnapshot)` 检查这一步是否把某条操作前合法的连线拖成 `invalid`，一旦是就用 `revertLastHistoryStep()` 整体撤销、不留 Ctrl+Z 记录（这次操作从用户角度看根本没发生）。新增任何"会放置新设备/新连线并触发 `recomputeAllConnections()`"的操作时，照这个模式走，不要只顾着让"自己这次要做的事"合法，却不管有没有连带弄坏别的连线。
+- **任何一次性操作都不能顺手弄坏一条别的、操作前还合法的连线**：`splitConnectionAtCell()`（生成汇流器/分流器）会放一个新的 1×1 设备，拖拽已有设备（`draggingDeviceId`）会挪动一个 3×3 设备的位置，这两类操作只要占用/挤占了另一条连线本来合法穿过（直行或物流桥交叉）或绕行需要用到的格子，`recomputeAllConnections()` 就可能让那条连线突然变 `invalid`——但用户视角里两条路径/两次操作根本没有冲突。`createSplitterAtClick()`、`finalizeFreeBeltConnection()` 的 `merge` 分支、以及设备拖拽的 `mouseup` 收尾逻辑，都要在改动生效、`recomputeAllConnections()` 跑完之后，用 `brokeExistingValidConnection(beforeSnapshot)` 检查这一步是否把某条操作前合法的连线拖成 `invalid`，一旦是就用 `revertLastHistoryStep()` 整体撤销、不留 Ctrl+Z 记录（这次操作从用户角度看根本没发生；设备拖拽会还原回拖拽前的格子位置）。注意设备重叠（`computeCollidingIds`）不受这条规则约束，那仍然只是警示、不阻挡放置，这里管的只是"连线被顺手拖坏"。新增任何"会移动/放置设备或连线并触发 `recomputeAllConnections()`"的操作时，照这个模式走，不要只顾着让"自己这次要做的事"合法，却不管有没有连带弄坏别的连线。
 
 ## Git 工作流与自动 Commit 规范
 
