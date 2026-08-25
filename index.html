@@ -477,7 +477,7 @@
   }
 
   function hitTestConnection(clientX, clientY) {
-    const THRESH = 6;
+    const THRESH = BELT_WIDTH / 2 + 2;
     for (let i = connections.length - 1; i >= 0; i--) {
       const c = connections[i];
       if (!c.points || c.points.length < 2) continue;
@@ -637,10 +637,51 @@
     for (const p of ports.outputs) drawPortMarker(p, 'output', dev.id, isOutputPortUsed(dev.id, p.index));
   }
 
-  function drawFlowArrows(points) {
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = worldToScreen(points[i].x, points[i].y);
-      const b = worldToScreen(points[i + 1].x, points[i + 1].y);
+  const BELT_WIDTH = 14;      // 传送带整体宽度(屏幕像素，含外框)
+  const BELT_RUNG_STEP = 14;  // 传送带纹路(辊轴刻线)间距
+
+  function pathToScreen(points) {
+    return points.map(p => worldToScreen(p.x, p.y));
+  }
+
+  function buildScreenPath2D(screenPoints) {
+    const path = new Path2D();
+    path.moveTo(screenPoints[0].x, screenPoints[0].y);
+    for (let i = 1; i < screenPoints.length; i++) path.lineTo(screenPoints[i].x, screenPoints[i].y);
+    return path;
+  }
+
+  // 沿折线绘制均匀分布的垂直刻线，模拟传送带辊轴纹理(拐弯处也保持等间距)
+  function drawBeltRungs(screenPoints, color) {
+    const rungLen = BELT_WIDTH * 0.8;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let carry = BELT_RUNG_STEP / 2;
+    for (let i = 0; i < screenPoints.length - 1; i++) {
+      const a = screenPoints[i], b = screenPoints[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+      const ux = dx / len, uy = dy / len;
+      const px = -uy, py = ux;
+      let d = carry;
+      while (d < len) {
+        const cx = a.x + ux * d, cy = a.y + uy * d;
+        ctx.moveTo(cx + px * rungLen / 2, cy + py * rungLen / 2);
+        ctx.lineTo(cx - px * rungLen / 2, cy - py * rungLen / 2);
+        d += BELT_RUNG_STEP;
+      }
+      carry = d - len;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawFlowArrows(screenPoints) {
+    for (let i = 0; i < screenPoints.length - 1; i++) {
+      const a = screenPoints[i], b = screenPoints[i + 1];
       const dx = b.x - a.x, dy = b.y - a.y;
       const len = Math.hypot(dx, dy);
       if (len < 20) continue;
@@ -659,25 +700,37 @@
     }
   }
 
+  // 传送带渲染为一条带状：深色外框(轨道) + 主色表面 + 等距辊轴刻线 + 流向箭头
   function drawConnectionPath(c, opts) {
     if (!c.points || c.points.length < 2) return;
+    const screenPoints = pathToScreen(c.points);
+    const path = buildScreenPath2D(screenPoints);
+
+    let railColor, surfaceColor;
+    if (c.invalid) { railColor = '#7a1020'; surfaceColor = '#ff1744'; }
+    else if (opts.selected) { railColor = '#8a6f00'; surfaceColor = '#ffeb3b'; }
+    else { railColor = '#5c3d12'; surfaceColor = '#ffa726'; }
+
     ctx.save();
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = c.invalid ? '#ff1744' : (opts.selected ? '#ffeb3b' : '#ffa726');
-    ctx.lineWidth = opts.selected ? 4 : 3;
-    if (c.invalid) ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    const p0 = worldToScreen(c.points[0].x, c.points[0].y);
-    ctx.moveTo(p0.x, p0.y);
-    for (let i = 1; i < c.points.length; i++) {
-      const p = worldToScreen(c.points[i].x, c.points[i].y);
-      ctx.lineTo(p.x, p.y);
-    }
-    ctx.stroke();
+    if (c.invalid) ctx.setLineDash([10, 6]);
+
+    ctx.strokeStyle = railColor;
+    ctx.lineWidth = BELT_WIDTH;
+    ctx.stroke(path);
+
+    ctx.strokeStyle = surfaceColor;
+    ctx.lineWidth = BELT_WIDTH - 5;
+    ctx.stroke(path);
+
     ctx.setLineDash([]);
     ctx.restore();
-    if (!c.invalid) drawFlowArrows(c.points);
+
+    if (!c.invalid) {
+      drawBeltRungs(screenPoints, railColor);
+      drawFlowArrows(screenPoints);
+    }
   }
 
   function drawConnections() {
