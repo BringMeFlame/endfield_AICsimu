@@ -115,8 +115,10 @@
 <div id="hint">
   拖拽空白处：平移画布　|　滚轮：缩放<br>
   从左侧工具栏拖出图标：放置设备<br>
-  点击设备：选中（高亮边框）　|　Delete / Backspace：删除选中设备<br>
-  设备网格重叠时会实时标红警示
+  点击设备：选中（高亮边框）　|　Delete / Backspace：删除选中设备/连线<br>
+  设备网格重叠时会实时标红警示<br>
+  从蓝色输入口/橙色输出口拖拽：橙色输出口拉到蓝色输入口自动生成传送带（A* 直角寻路）<br>
+  拖动设备时，相连的传送带会实时重新寻路
 </div>
 
 <script>
@@ -133,12 +135,31 @@
   let offsetX = 0;
   let offsetY = 0;
 
+  // ---- 端口 / 寻路参数 ----
+  const PORT_COUNT = 3;        // 每台设备的输入口/输出口数量
+  const PORT_HIT_RADIUS = 8;   // 端口拾取半径(屏幕像素)
+  const TURN_PENALTY = 3;      // A* 转弯惩罚(每次拐弯额外代价)
+  const DIR_E = 0, DIR_S = 1, DIR_W = 2, DIR_N = 3;
+  const DIR_VECT = [{ dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }, { dx: 0, dy: -1 }];
+
   // ---- 设备数据 ----
   // devices: { id, gridX, gridY, w, h, color, borderColor, label }
   let devices = [];
   let nextId = 1;
 
   let selectedId = null;
+
+  // ---- 传送带连线数据 ----
+  // connections: { id, fromDeviceId, fromPort, toDeviceId, toPort, points:[{x,y}], invalid }
+  let connections = [];
+  let nextConnId = 1;
+  let selectedConnectionId = null;
+
+  // ---- 从输出口拖拽生成连线的状态 ----
+  let wireDragging = false;
+  let wireDragFrom = null; // { deviceId, index, x, y }
+  let wireDragCurrent = { x: 0, y: 0 };
+  let hoverInputPort = null; // { deviceId, index }
 
   // ---- 画布内交互状态 ----
   let isPanning = false;
@@ -222,6 +243,248 @@
       if (worldX >= rect.x && worldX <= rect.x + rect.w &&
           worldY >= rect.y && worldY <= rect.y + rect.h) {
         return dev;
+      }
+    }
+    return null;
+  }
+
+  // ---- 端口(输入口/输出口) ----
+
+  // 计算设备的输入口/输出口世界坐标。输入口在左边缘、输出口在右边缘，
+  // 每行一个端口，物料始终沿 +x 方向流动(输入口箭头指入设备，输出口箭头指出设备)。
+  // cellCol/cellRow 是紧贴该端口、位于设备外侧的网格单元，作为寻路的起止格。
+  function getDevicePorts(dev, pos) {
+    const inputs = [], outputs = [];
+    const leftX = pos.gridX * GRID_SIZE;
+    const rightX = (pos.gridX + dev.w) * GRID_SIZE;
+    const topY = pos.gridY * GRID_SIZE;
+    const count = Math.min(PORT_COUNT, dev.h);
+    for (let i = 0; i < count; i++) {
+      const py = topY + (i + 0.5) * GRID_SIZE;
+      inputs.push({ index: i, x: leftX, y: py, cellCol: pos.gridX - 1, cellRow: pos.gridY + i });
+      outputs.push({ index: i, x: rightX, y: py, cellCol: pos.gridX + dev.w, cellRow: pos.gridY + i });
+    }
+    return { inputs, outputs };
+  }
+
+  function findPortAt(clientX, clientY, portType) {
+    for (let i = devices.length - 1; i >= 0; i--) {
+      const dev = devices[i];
+      const pos = effectiveGridPos(dev);
+      const ports = getDevicePorts(dev, pos);
+      const list = portType === 'output' ? ports.outputs : ports.inputs;
+      for (const p of list) {
+        const s = worldToScreen(p.x, p.y);
+        const dx = clientX - s.x, dy = clientY - s.y;
+        if (dx * dx + dy * dy <= PORT_HIT_RADIUS * PORT_HIT_RADIUS) {
+          return { deviceId: dev.id, index: p.index, x: p.x, y: p.y, cellCol: p.cellCol, cellRow: p.cellRow };
+        }
+      }
+    }
+    return null;
+  }
+
+  function isOutputPortUsed(deviceId, index) {
+    return connections.some(c => c.fromDeviceId === deviceId && c.fromPort === index);
+  }
+  function isInputPortUsed(deviceId, index) {
+    return connections.some(c => c.toDeviceId === deviceId && c.toPort === index);
+  }
+
+  // ---- 正交 A* 寻路(带转弯惩罚) ----
+
+  class MinHeap {
+    constructor() { this.items = []; }
+    get size() { return this.items.length; }
+    push(item) {
+      const a = this.items;
+      a.push(item);
+      let i = a.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (a[p].f <= a[i].f) break;
+        [a[p], a[i]] = [a[i], a[p]];
+        i = p;
+      }
+    }
+    pop() {
+      const a = this.items;
+      const top = a[0];
+      const last = a.pop();
+      if (a.length) {
+        a[0] = last;
+        let i = 0;
+        while (true) {
+          const l = 2 * i + 1, r = 2 * i + 2;
+          let smallest = i;
+          if (l < a.length && a[l].f < a[smallest].f) smallest = l;
+          if (r < a.length && a[r].f < a[smallest].f) smallest = r;
+          if (smallest === i) break;
+          [a[smallest], a[i]] = [a[i], a[smallest]];
+          i = smallest;
+        }
+      }
+      return top;
+    }
+  }
+
+  function manhattan(c1, r1, c2, r2) {
+    return Math.abs(c1 - c2) + Math.abs(r1 - r2);
+  }
+
+  function buildBlockedSet() {
+    const set = new Set();
+    for (const dev of devices) {
+      const pos = effectiveGridPos(dev);
+      for (let dx = 0; dx < dev.w; dx++) {
+        for (let dy = 0; dy < dev.h; dy++) {
+          set.add((pos.gridX + dx) + ',' + (pos.gridY + dy));
+        }
+      }
+    }
+    return set;
+  }
+
+  // 状态空间为 (col, row, dir)：dir 表示到达该格时的移动方向，用于计算转弯惩罚。
+  // 起点视为"刚从输出口沿 +x 方向进入格子"，终点要求"沿 +x 方向进入格子"才算到达输入口，
+  // 这样生成的路径两端总是与设备边缘垂直、笔直地接入端口。
+  function aStarOrthogonal(startCol, startRow, goalCol, goalRow, blocked) {
+    if (startCol === goalCol && startRow === goalRow) {
+      return [{ col: startCol, row: startRow }];
+    }
+    let margin = 16;
+    for (let attempt = 0; attempt < 2; attempt++, margin *= 2) {
+      const minC = Math.min(startCol, goalCol) - margin, maxC = Math.max(startCol, goalCol) + margin;
+      const minR = Math.min(startRow, goalRow) - margin, maxR = Math.max(startRow, goalRow) + margin;
+
+      const gScore = new Map();
+      const cameFrom = new Map();
+      const startKey = startCol + ',' + startRow + ',' + DIR_E;
+      gScore.set(startKey, 0);
+
+      const heap = new MinHeap();
+      heap.push({ key: startKey, col: startCol, row: startRow, dir: DIR_E, f: manhattan(startCol, startRow, goalCol, goalRow) });
+      const closed = new Set();
+
+      while (heap.size) {
+        const node = heap.pop();
+        if (closed.has(node.key)) continue;
+        closed.add(node.key);
+
+        if (node.col === goalCol && node.row === goalRow && node.dir === DIR_E) {
+          const path = [];
+          let curKey = node.key;
+          while (curKey) {
+            const [c, r] = curKey.split(',').map(Number);
+            path.push({ col: c, row: r });
+            curKey = cameFrom.get(curKey);
+          }
+          path.reverse();
+          return path;
+        }
+
+        for (let d = 0; d < 4; d++) {
+          const nc = node.col + DIR_VECT[d].dx;
+          const nr = node.row + DIR_VECT[d].dy;
+          if (nc < minC || nc > maxC || nr < minR || nr > maxR) continue;
+          if (blocked.has(nc + ',' + nr)) continue;
+          const turn = d === node.dir ? 0 : 1;
+          const stepCost = 1 + turn * TURN_PENALTY;
+          const ng = gScore.get(node.key) + stepCost;
+          const nkey = nc + ',' + nr + ',' + d;
+          if (!gScore.has(nkey) || ng < gScore.get(nkey)) {
+            gScore.set(nkey, ng);
+            cameFrom.set(nkey, node.key);
+            const h = manhattan(nc, nr, goalCol, goalRow);
+            heap.push({ key: nkey, col: nc, row: nr, dir: d, f: ng + h });
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function dedupePoints(pts) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const a = out[out.length - 1], b = pts[i];
+      if (Math.abs(a.x - b.x) > 0.01 || Math.abs(a.y - b.y) > 0.01) out.push(b);
+    }
+    return out;
+  }
+
+  // 合并折线中方向相同的连续共线点，得到干净的直角拐点序列
+  function simplifyCollinear(pts) {
+    if (pts.length < 3) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = out[out.length - 1], cur = pts[i], next = pts[i + 1];
+      const dx1 = cur.x - prev.x, dy1 = cur.y - prev.y;
+      const dx2 = next.x - cur.x, dy2 = next.y - cur.y;
+      const collinear =
+        (dx1 === 0 && dx2 === 0 && Math.sign(dy1) === Math.sign(dy2)) ||
+        (dy1 === 0 && dy2 === 0 && Math.sign(dx1) === Math.sign(dx2));
+      if (!collinear) out.push(cur);
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+
+  // 计算一条连线从输出口到输入口的最佳直角路径
+  function computePath(conn) {
+    const fromDev = devices.find(d => d.id === conn.fromDeviceId);
+    const toDev = devices.find(d => d.id === conn.toDeviceId);
+    if (!fromDev || !toDev) return { points: [], invalid: true };
+
+    const fromPos = effectiveGridPos(fromDev);
+    const toPos = effectiveGridPos(toDev);
+    const startPort = getDevicePorts(fromDev, fromPos).outputs[conn.fromPort];
+    const endPort = getDevicePorts(toDev, toPos).inputs[conn.toPort];
+    if (!startPort || !endPort) return { points: [], invalid: true };
+
+    const blocked = buildBlockedSet();
+    const cellPath = aStarOrthogonal(startPort.cellCol, startPort.cellRow, endPort.cellCol, endPort.cellRow, blocked);
+    if (!cellPath) {
+      return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], invalid: true };
+    }
+
+    const pts = [{ x: startPort.x, y: startPort.y }];
+    for (const c of cellPath) {
+      pts.push({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE });
+    }
+    pts.push({ x: endPort.x, y: endPort.y });
+
+    return { points: simplifyCollinear(dedupePoints(pts)), invalid: false };
+  }
+
+  // 设备布局发生任何变化(拖动/新增/删除)都可能影响其他连线的最佳绕行路径，
+  // 因此统一重新计算全部连线，而不仅是与该设备直接相连的连线。
+  function recomputeAllConnections() {
+    for (const c of connections) {
+      const res = computePath(c);
+      c.points = res.points;
+      c.invalid = res.invalid;
+    }
+  }
+
+  function distPointToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const cx = ax + t * dx, cy = ay + t * dy;
+    return Math.hypot(px - cx, py - cy);
+  }
+
+  function hitTestConnection(clientX, clientY) {
+    const THRESH = 6;
+    for (let i = connections.length - 1; i >= 0; i--) {
+      const c = connections[i];
+      if (!c.points || c.points.length < 2) continue;
+      for (let j = 0; j < c.points.length - 1; j++) {
+        const a = worldToScreen(c.points[j].x, c.points[j].y);
+        const b = worldToScreen(c.points[j + 1].x, c.points[j + 1].y);
+        if (distPointToSegment(clientX, clientY, a.x, a.y, b.x, b.y) <= THRESH) return c;
       }
     }
     return null;
@@ -326,7 +589,120 @@
         colliding: collidingIds.has(dev.id),
         selected: dev.id === selectedId
       });
+      drawDevicePorts(dev, pos);
     }
+  }
+
+  // 端口悬停状态：拖拽连线时若正悬停在该输入口上，返回 'valid' / 'invalid'
+  function portHoverState(type, deviceId, index) {
+    if (type !== 'input' || !wireDragging || !hoverInputPort) return null;
+    if (hoverInputPort.deviceId !== deviceId || hoverInputPort.index !== index) return null;
+    const sameDevice = deviceId === wireDragFrom.deviceId;
+    const used = isInputPortUsed(deviceId, index);
+    return (!sameDevice && !used) ? 'valid' : 'invalid';
+  }
+
+  function drawPortMarker(p, type, deviceId, connected) {
+    const screen = worldToScreen(p.x, p.y);
+    const hover = portHoverState(type, deviceId, p.index);
+
+    let fill = type === 'input' ? '#42a5f5' : '#ffa726';
+    if (connected) fill = '#66bb6a';
+    if (hover === 'valid') fill = '#66bb6a';
+    if (hover === 'invalid') fill = '#ff1744';
+
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 方向箭头：物料始终沿 +x 方向流动
+    ctx.fillStyle = '#111';
+    ctx.beginPath();
+    ctx.moveTo(screen.x + 5, screen.y);
+    ctx.lineTo(screen.x - 2, screen.y - 4);
+    ctx.lineTo(screen.x - 2, screen.y + 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawDevicePorts(dev, pos) {
+    const ports = getDevicePorts(dev, pos);
+    for (const p of ports.inputs) drawPortMarker(p, 'input', dev.id, isInputPortUsed(dev.id, p.index));
+    for (const p of ports.outputs) drawPortMarker(p, 'output', dev.id, isOutputPortUsed(dev.id, p.index));
+  }
+
+  function drawFlowArrows(points) {
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = worldToScreen(points[i].x, points[i].y);
+      const b = worldToScreen(points[i + 1].x, points[i + 1].y);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 20) continue;
+      const ux = dx / len, uy = dy / len;
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const size = 5;
+      ctx.save();
+      ctx.fillStyle = '#fff3e0';
+      ctx.beginPath();
+      ctx.moveTo(mx + ux * size, my + uy * size);
+      ctx.lineTo(mx - ux * size - uy * size * 0.6, my - uy * size + ux * size * 0.6);
+      ctx.lineTo(mx - ux * size + uy * size * 0.6, my - uy * size - ux * size * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawConnectionPath(c, opts) {
+    if (!c.points || c.points.length < 2) return;
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = c.invalid ? '#ff1744' : (opts.selected ? '#ffeb3b' : '#ffa726');
+    ctx.lineWidth = opts.selected ? 4 : 3;
+    if (c.invalid) ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    const p0 = worldToScreen(c.points[0].x, c.points[0].y);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < c.points.length; i++) {
+      const p = worldToScreen(c.points[i].x, c.points[i].y);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    if (!c.invalid) drawFlowArrows(c.points);
+  }
+
+  function drawConnections() {
+    for (const c of connections) {
+      drawConnectionPath(c, { selected: c.id === selectedConnectionId });
+    }
+  }
+
+  function drawWireDragPreview() {
+    if (!wireDragging || !wireDragFrom) return;
+    const start = { x: wireDragFrom.x, y: wireDragFrom.y };
+    const mid = { x: wireDragCurrent.x, y: start.y };
+    const end = wireDragCurrent;
+    ctx.save();
+    ctx.strokeStyle = hoverInputPort ? '#66bb6a' : 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    const p0 = worldToScreen(start.x, start.y), p1 = worldToScreen(mid.x, mid.y), p2 = worldToScreen(end.x, end.y);
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   function drawSpawnPreview() {
@@ -359,41 +735,74 @@
 
   function draw() {
     drawGrid();
+    drawConnections();
     drawDevices();
     drawSpawnPreview();
+    drawWireDragPreview();
   }
 
   // ---- 画布内鼠标交互：平移 / 选中 / 拖拽已有设备 ----
 
   canvas.addEventListener('mousedown', (e) => {
+    const outPort = findPortAt(e.clientX, e.clientY, 'output');
+    if (outPort) {
+      // 已被占用的输出口不允许再拖出新连线
+      if (!isOutputPortUsed(outPort.deviceId, outPort.index)) {
+        wireDragging = true;
+        wireDragFrom = outPort;
+        wireDragCurrent = { x: outPort.x, y: outPort.y };
+        selectedId = null;
+        selectedConnectionId = null;
+        draw();
+      }
+      return;
+    }
+
     const worldPos = screenToWorld(e.clientX, e.clientY);
     const hit = hitTestDevice(worldPos.x, worldPos.y);
 
     if (hit) {
       selectedId = hit.id;
+      selectedConnectionId = null;
       draggingDeviceId = hit.id;
       dragDeviceWX = hit.gridX * GRID_SIZE;
       dragDeviceWY = hit.gridY * GRID_SIZE;
       dragOffsetWX = worldPos.x - dragDeviceWX;
       dragOffsetWY = worldPos.y - dragDeviceWY;
       canvas.style.cursor = 'grabbing';
-    } else {
-      selectedId = null;
-      isPanning = true;
-      lastMouseX = e.clientX;
-      lastMouseY = e.clientY;
-      canvas.style.cursor = 'grabbing';
+      draw();
+      return;
     }
+
+    const connHit = hitTestConnection(e.clientX, e.clientY);
+    if (connHit) {
+      selectedConnectionId = connHit.id;
+      selectedId = null;
+      draw();
+      return;
+    }
+
+    selectedId = null;
+    selectedConnectionId = null;
+    isPanning = true;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+    canvas.style.cursor = 'grabbing';
     draw();
   });
 
   window.addEventListener('mousemove', (e) => {
-    if (draggingDeviceId !== null) {
+    if (wireDragging) {
+      wireDragCurrent = screenToWorld(e.clientX, e.clientY);
+      hoverInputPort = findPortAt(e.clientX, e.clientY, 'input');
+      draw();
+    } else if (draggingDeviceId !== null) {
       const worldPos = screenToWorld(e.clientX, e.clientY);
       const rawX = worldPos.x - dragOffsetWX;
       const rawY = worldPos.y - dragOffsetWY;
       dragDeviceWX = Math.round(rawX / GRID_SIZE) * GRID_SIZE;
       dragDeviceWY = Math.round(rawY / GRID_SIZE) * GRID_SIZE;
+      recomputeAllConnections();
       draw();
     } else if (isPanning) {
       const dx = e.clientX - lastMouseX;
@@ -405,16 +814,46 @@
       draw();
     } else if (!spawning) {
       const worldPos = screenToWorld(e.clientX, e.clientY);
-      canvas.style.cursor = hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default';
+      if (findPortAt(e.clientX, e.clientY, 'output') || findPortAt(e.clientX, e.clientY, 'input')) {
+        canvas.style.cursor = 'crosshair';
+      } else {
+        canvas.style.cursor = hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default';
+      }
     }
   });
 
-  window.addEventListener('mouseup', () => {
+  window.addEventListener('mouseup', (e) => {
+    if (wireDragging) {
+      const target = findPortAt(e.clientX, e.clientY, 'input');
+      if (target && target.deviceId !== wireDragFrom.deviceId && !isInputPortUsed(target.deviceId, target.index)) {
+        const conn = {
+          id: nextConnId++,
+          fromDeviceId: wireDragFrom.deviceId,
+          fromPort: wireDragFrom.index,
+          toDeviceId: target.deviceId,
+          toPort: target.index,
+          points: [],
+          invalid: false
+        };
+        const res = computePath(conn);
+        conn.points = res.points;
+        conn.invalid = res.invalid;
+        connections.push(conn);
+        selectedConnectionId = conn.id;
+      }
+      wireDragging = false;
+      wireDragFrom = null;
+      hoverInputPort = null;
+      draw();
+      return;
+    }
+
     if (draggingDeviceId !== null) {
       const dev = devices.find(d => d.id === draggingDeviceId);
       if (dev) {
         dev.gridX = Math.round(dragDeviceWX / GRID_SIZE);
         dev.gridY = Math.round(dragDeviceWY / GRID_SIZE);
+        recomputeAllConnections();
       }
     }
     draggingDeviceId = null;
@@ -441,10 +880,18 @@
   // ---- 键盘删除 ----
 
   window.addEventListener('keydown', (e) => {
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null) {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (selectedConnectionId !== null) {
       e.preventDefault();
+      connections = connections.filter(c => c.id !== selectedConnectionId);
+      selectedConnectionId = null;
+      draw();
+    } else if (selectedId !== null) {
+      e.preventDefault();
+      connections = connections.filter(c => c.fromDeviceId !== selectedId && c.toDeviceId !== selectedId);
       devices = devices.filter(d => d.id !== selectedId);
       selectedId = null;
+      recomputeAllConnections();
       draw();
     }
   });
@@ -505,6 +952,7 @@
       };
       devices.push(newDevice);
       selectedId = newDevice.id;
+      recomputeAllConnections();
     }
     spawnPreview = null;
     draw();
