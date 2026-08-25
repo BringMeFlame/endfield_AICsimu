@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Infinite Grid Canvas Demo</title>
+<meta name="description" content="传送带工厂布局模拟器：设备摆放旋转、自由传送带模式画线、自动汇流/分流、手动路径调整、端点重接、Ctrl+Z 撤销。">
+<title>传送带工厂布局模拟器</title>
 <style>
   html, body {
     margin: 0;
@@ -123,7 +124,7 @@
   【自由传送带模式】E：切换（光标变十字，右键退出）。仅在此模式下才能放置新传送带、自动汇流/分流<br>
   左键点起点 A（输出口，或设备本体自动选最近可用输出口，或空白格）→ 移动预览 → 左键点终点 B（输入口/已有传送带/设备本体自动选最近可用输入口/空白格）落地<br>
   输入口不能作为起点、输出口不能作为终点，误点会有光标提示且不会中断画线<br>
-  终点落在已有传送带上：自动插入汇流器（Merger，3 进 1 出）<br>
+  终点落在已有传送带上：自动插入汇流器（Merger，3 进 1 出）；终点落在已有的汇流器/分流器节点本体上：自动接入其下一个可用端口<br>
   Alt+左键点击已有传送带（任意模式下）：原地生成分流器（Splitter，1 进 3 出）并自动进入自由模式拉出新分支
 </div>
 
