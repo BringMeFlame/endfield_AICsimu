@@ -500,6 +500,31 @@
     return out;
   }
 
+  // 消除格子路径中的自我重叠：A* 的状态是 (格子, 方向)，当某个格子(尤其是端口
+  // 入口格)必须以特定方向进入时，算法可能先以别的方向"撞"到该格、再退回一格
+  // 掉头重新笔直接入，导致同一个格子被经过两次，视觉上出现多余的凸出/回头。
+  // 这里按"先到先得"截断：格子第二次出现时，直接删掉两次出现之间的所有路段，
+  // 保证同一条路径里每个格子只出现一次，得到最简的直角走线。
+  function removeSelfOverlap(cellPath) {
+    if (cellPath.length < 3) return cellPath;
+    const result = [];
+    const indexOf = new Map();
+    for (const cell of cellPath) {
+      const key = cell.col + ',' + cell.row;
+      if (indexOf.has(key)) {
+        const idx = indexOf.get(key);
+        result.length = idx + 1;
+        for (const [k, v] of indexOf) {
+          if (v > idx) indexOf.delete(k);
+        }
+      } else {
+        indexOf.set(key, result.length);
+        result.push(cell);
+      }
+    }
+    return result;
+  }
+
   // 合并折线中方向相同的连续共线点，得到干净的直角拐点序列
   function simplifyCollinear(pts) {
     if (pts.length < 3) return pts;
@@ -551,8 +576,9 @@
     for (let i = 0; i < checkpoints.length - 1; i++) {
       const a = checkpoints[i], b = checkpoints[i + 1];
       const hopGoalDir = i === checkpoints.length - 2 ? goalDir : null;
-      const hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
+      let hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, beltOccupancy);
       if (!hopPath) { fullCellPath = null; break; }
+      hopPath = removeSelfOverlap(hopPath);
       fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));
       if (hopPath.length >= 2) curDir = dirBetween(hopPath[hopPath.length - 2], hopPath[hopPath.length - 1]);
     }
@@ -560,6 +586,7 @@
     if (!fullCellPath) {
       return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, startDir, goalDir, invalid: true };
     }
+    fullCellPath = removeSelfOverlap(fullCellPath);
 
     const pts = [{ x: startPort.x, y: startPort.y }];
     for (const c of fullCellPath) {
