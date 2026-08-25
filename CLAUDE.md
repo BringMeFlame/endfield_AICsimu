@@ -10,18 +10,31 @@
 
 ## 技术栈与依赖
 
-- **当前实际技术栈**：纯 HTML5 Canvas 2D + 原生 JavaScript（ES6+，箭头函数/`class`/解构等），**没有任何构建工具、没有 `package.json`、没有第三方依赖**。整个应用是仓库根目录下唯一的 `index.html` 一个文件：`<style>` + HTML 结构 + 一个 IIFE 包裹的 `<script>`。
-- 本地预览只需任意静态文件服务器，例如：
+- **当前实际技术栈**：纯 HTML5 Canvas 2D + 原生 JavaScript（ES6+，箭头函数/`class`/解构等）+ **Vite** 作为开发服务器/打包工具，用 ES Module（`import`/`export`）组织代码。有 `package.json`，唯一的第三方依赖是 `vite`（devDependency），没有运行时依赖。
+- **文件结构**（`project_status.md` 的"重构建议"已落地）：
+  - `index.html` —— 只剩 HTML 骨架（canvas / toolbar / hint 等 DOM 节点），`<link rel="stylesheet" href="/style.css">` 引入样式，`<script type="module" src="/src/main.js"></script>` 引入入口模块。
+  - `style.css` —— 原来内联在 `<style>` 里的全部样式，原样搬出，规则不变。
+  - `src/constants.js` —— 所有 `UPPER_SNAKE_CASE` 常量（`GRID_SIZE`、`PORT_COUNT`、`TURN_PENALTY`、`DIR_*`、`BELT_WIDTH`、`HISTORY_LIMIT`、`HINT_*` 等）。
+  - `src/state.js` —— DOM 元素引用（`canvas`/`ctx`/`toolbar`/`crusherIcon`/`ghostIcon`/`hintEl`，各自独立 `export`，**不在** `state` 对象里）+ 一个导出的可变 `state` 对象，装下原来所有顶层 `let`（`devices`、`connections`、`selectedId`、`freeBeltMode` 等，见下方"全局变量习惯"）。
+  - `src/coords.js` —— `screenToWorld`/`worldToScreen`/`worldToCell`/`initView`。
+  - `src/devices.js` —— 设备数据模型、端口计算（`getDevicePorts`/`edgePorts`/`nodeDevicePorts`）、碰撞检测、`spawnTemplate`。
+  - `src/pathfinding.js` —— `aStarOrthogonal`、`removeSelfOverlap`、`buildBeltOccupancy`、`computePath`、`splitConnectionAtCell`、连线/途经点命中测试等。
+  - `src/render.js` —— 所有 `drawXxx` 函数 + `draw()`。
+  - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
+  - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeBeltStartClick` 等）、工具栏拖拽生成新设备。
+  - `src/main.js` —— 入口：`resize()`、`initView()`、`initInteractions()`、首次 `draw()`。
+- 依赖安装与本地预览：
   ```bash
-  python3 -m http.server 8971
-  # 浏览器打开 http://localhost:8971/index.html
+  npm install
+  npm run dev      # 启动 Vite 开发服务器(默认 http://localhost:5173，热更新)
+  npm run build     # 产出到 dist/ 的生产构建
+  npm run preview   # 本地预览 build 产物
   ```
-  或直接双击 `index.html` 用浏览器打开（Canvas/事件逻辑不依赖同源请求，双击打开也能跑）。
-- **关于 Vite**：项目目前 *没有* 引入 Vite 或任何打包器。如果后续要拆分模块化（见 `project_status.md` 的"重构建议"），Vite 会是引入 ES Module 打包 + 开发热更新的合理选择，但这是**尚未发生的改动**，不要假设当前代码里已经有 Vite 配置。
+  不再支持直接双击 `index.html` 用 `file://` 打开（ES Module 的 `import` 在 `file://` 协议下会被浏览器按 CORS 拦截），必须经由 Vite dev server 或任意支持 ES Module 的静态服务器访问。
 
 ## 代码规范与修改原则
 
-代码目前全部集中在 `index.html` 的一个 IIFE 里（`(() => { ... })()`），下面这些是**已经在用、必须延续**的约定：
+代码已按功能拆分到 `src/*.js` 的 ES Module 里（见上方"文件结构"），不再是单个 IIFE；但模块拆分只是把原来 IIFE 闭包内的分区物理搬到了对应文件，**行为和下面这些约定完全没变**，新增代码前先确认该放进哪个模块（对照上面"文件结构"的职责划分，不要把新函数塞进无关模块）：
 
 ### 命名规范
 - **函数/变量**：`camelCase`，动词开头描述行为，例如 `hitTestDevice`、`buildBlockedSet`、`resolveFreeBeltStartClick`、`pickNearestPortByDistance`。名字要能看出"做什么"，不要用 `a`/`tmp` 这类占位名（循环内部短生命周期变量除外，如 `a`, `b` 表示线段两端点）。
@@ -34,15 +47,16 @@
   转换只走 `screenToWorld` / `worldToScreen` / `worldToCell` 这三个函数，不要在别处手写换算公式。
 
 ### 全局变量习惯
-- 所有可变状态都是 IIFE 顶层的 `let` 声明（`devices`、`connections`、`selectedId`、`freeBeltMode`、`draggingWaypoint`、`endpointDrag`、`cursorTooltip`、`history` 等），**没有引入状态管理框架，也没有把状态收进单一 `state` 对象**——这是当前的既定风格，新增交互状态时延续"一个新的顶层 `let` + 紧跟着的注释说明其含义/结构"这个模式，不要临时改成别的模式（比如塞进已有对象里）。
+- **模块化之后的例外**：原来是 IIFE 顶层一个个 `let`（`devices`、`connections`、`selectedId`、`freeBeltMode`、`draggingWaypoint`、`endpointDrag`、`cursorTooltip`、`history` 等）。拆成 ES Module 后，跨模块 `import` 进来的绑定是只读的——没法在别的模块里对 `import` 进来的 `let` 重新赋值，扁平 `let` 的写法没法照搬到多文件场景。因此 `src/state.js` 改用一个共享的可变 `state` 对象承载所有这些原顶层 `let`，各模块统一通过 `state.xxx = ...` 读写，语义和原来完全等价，只是多了一层容器——**这是唯一被批准偏离"扁平 let"风格的地方**，不要因为这个先例就把其它明明可以独立 `export` 的东西（比如 `canvas`/`ctx`/`spawnTemplate` 这类不会被 `undo()` 重置的"准常量"）也塞进 `state` 对象。
+- 新增交互态变量时，在 `src/state.js` 的 `state` 对象里加一个新字段 + 紧跟着的注释说明其含义/结构，延续原来的注释风格。
 - 新增交互态变量后，必须在下面三处同步处理，否则会有状态泄漏 bug（本项目已经踩过好几次这个坑）：
-  1. `undo()` 里重置（撤销可能发生在交互进行到一半时）。
-  2. 进入自由传送带模式的 `E` 键分支里重置（进入画线模式是"独占工具"，要清掉其它残留交互态）。
-  3. 对应的 `mouseup`/`dblclick`/`contextmenu` 收尾逻辑里正确清空。
-- 常量和状态变量都不要挂到 `window`/全局作用域，保持在 IIFE 闭包内。
+  1. `src/history.js` 的 `undo()` 里重置（撤销可能发生在交互进行到一半时）。
+  2. `src/interactions.js` 里进入自由传送带模式的 `E` 键分支里重置（进入画线模式是"独占工具"，要清掉其它残留交互态）。
+  3. `src/interactions.js` 里对应的 `mouseup`/`dblclick`/`contextmenu` 收尾逻辑里正确清空。
+- 常量和状态变量都不要挂到 `window`/全局作用域，保持在各自模块的 `export` 范围内。
 
 ### 样式编写规则
-- 所有全局外观都写在 `<head>` 内联的 `<style>` 里，用普通 CSS class/id 选择器，不用 CSS-in-JS、不用行内 `style=`（除了 Canvas 内 `ctx.fillStyle` 这类绘图属性，那是 Canvas API 不是 DOM 样式）。
+- 所有全局外观都写在根目录的 `style.css` 里（原来内联在 `<head>` 的 `<style>`，重构时原样搬出），用普通 CSS class/id 选择器，不用 CSS-in-JS、不用行内 `style=`（除了 Canvas 内 `ctx.fillStyle` 这类绘图属性，那是 Canvas API 不是 DOM 样式）。
 - 颜色沿用现有调色板，不要新增无关色系：
   - 输入口蓝 `#42a5f5`，输出口橙 `#ffa726`，已连接端口绿 `#66bb6a`。
   - 选中态统一用黄色系（`#ffeb3b` 描边/`#ffeb3b` 传送带表面）。
@@ -51,7 +65,7 @@
 - UI 浮层（hint 胶囊、toolbar、ghost-icon）一律 `position: fixed` + `pointer-events: none`（除非本身要接收鼠标事件，如 toolbar 图标），避免遮挡或吃掉 Canvas 上的交互。
 
 ### 代码模块化与注释
-- 虽然是单文件，内部**必须**用 `// ---- 分节标题 ----` 这种注释块划出逻辑分区（现有分区例如：世界坐标系参数、端口、正交 A* 寻路、手动途经点、绘制、自由传送带模式、画布内鼠标交互、键盘、工具栏拖拽生成新设备）。新增一大块功能时，先想清楚它属于哪个分区或要不要开一个新分区，不要把新函数随手插在无关分区中间。
+- 代码已按上方"文件结构"拆到 `src/*.js` 多个模块，模块本身就是最外层的分区；每个模块内部仍然**必须**用 `// ---- 分节标题 ----` 这种注释块划出更细的逻辑分区（例如 `pathfinding.js` 内部区分"正交 A* 寻路"和"手动途经点"，`interactions.js` 内部区分"自由传送带模式""画布内鼠标交互""键盘""工具栏拖拽生成新设备"）。新增一大块功能时，先想清楚它属于哪个模块、模块内哪个分区，或要不要开一个新分区，不要把新函数随手插在无关模块/分区中间。
 - 注释只写"为什么这么做"，不写"这行代码是干嘛的"——变量名和函数名已经说清楚 what 了。典型例子是 `removeSelfOverlap` 上面那段解释 A* 状态空间为什么会产生"多凸出一格再掉头"伪影，以及 `computePath` 里为什么**不能**对拼接后的完整路径整体去重（这是刚踩过的坑，注释原文保留，修改这块逻辑前务必先读懂这条注释）。
 - 每个"点击优先级""解析规则"类的函数（如 `resolveFreeBeltStartClick`、`resolveFreeBeltEndClick`）都在函数上方用编号列表写清楚判定顺序。新增新的点击/命中判定分支时，同步更新这个列表，保持顺序描述和代码分支顺序一致。
 
@@ -94,14 +108,12 @@
 ## 运行与预览
 
 ```bash
-# 在仓库根目录起一个静态服务器（任选其一）
-python3 -m http.server 8971
-npx serve .
-
-# 然后浏览器打开
-http://localhost:8971/index.html
+npm install       # 首次拉取仓库后安装依赖(vite)
+npm run dev        # 启动 Vite 开发服务器(默认 http://localhost:5173，热更新)
+npm run build       # 产出到 dist/ 的生产构建(用于验证打包不报错)
+npm run preview      # 本地预览 build 产物
 ```
 
-也可以不起服务器，直接用浏览器打开 `index.html` 文件（`file://` 协议下功能完全一致，因为没有任何跨域/fetch 依赖）。
+`index.html` 的 `<script type="module">` 依赖浏览器原生 ES Module 加载，在 `file://` 协议下会被 CORS 拦截跑不起来，**必须**通过 `npm run dev`（或任意支持正确 MIME 类型的静态服务器，比如 `npx serve .`）访问，不能再双击文件打开。
 
-没有测试框架、没有 lint 配置、没有 CI。改完代码后建议至少跑一遍 `node -e "new Function(...)"` 之类的语法检查（把 `<script>` 内容抽出来喂给 `new Function()`），再用浏览器（或 Playwright）手动走一遍改动涉及的交互路径确认没有回归。
+没有测试框架、没有 lint 配置、没有 CI。改完代码后建议至少跑一遍 `npm run build` 确认没有打包期语法/引用错误，再用浏览器（或 Playwright，本机 Chromium 预装在 `/opt/pw-browsers/`）手动走一遍改动涉及的交互路径确认没有回归。
