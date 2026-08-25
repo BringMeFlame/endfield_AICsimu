@@ -22,18 +22,24 @@
   }
   #hint {
     position: fixed;
-    top: 12px;
-    left: 100px;
-    color: #cfcfcf;
+    left: 96px;
+    bottom: 14px;
+    color: #dcdcdc;
     font-family: system-ui, sans-serif;
-    font-size: 13px;
-    line-height: 1.6;
-    background: rgba(0, 0, 0, 0.35);
-    padding: 8px 12px;
-    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    background: rgba(20, 20, 20, 0.75);
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     pointer-events: none;
     user-select: none;
     z-index: 5;
+    white-space: nowrap;
+  }
+  #hint.belt-mode {
+    border-color: rgba(102, 187, 106, 0.6);
+    color: #eafaf0;
   }
 
   #toolbar {
@@ -113,20 +119,7 @@
 
 <div id="ghost-icon">粉碎机</div>
 
-<div id="hint">
-  【普通模式】拖拽空白处：平移画布　|　滚轮：缩放　|　从左侧工具栏拖出图标：放置设备<br>
-  点击设备：选中（高亮边框）　|　R：顺时针旋转选中设备<br>
-  Delete / Backspace：删除选中设备（相连传送带保留、断开处变为悬空端点）或删除选中传送带<br>
-  设备网格重叠时会实时标红警示　|　拖动设备时，相连的传送带会实时重新寻路（A* 直角寻路，禁止重叠、交叉处生成物流桥）<br>
-  点击已放置的传送带：选中　|　拖拽传送带线体：插入/移动一个途经点，自由调整路线　|　双击途经点：删除<br>
-  拖拽传送带末端箭头（已连接的输入口）：改接到同一/其它设备的另一个可用输入口，自动重新寻路<br>
-  Ctrl+Z（Mac：Cmd+Z）：撤销上一步操作，最多回退 30 步<br>
-  【自由传送带模式】E：切换（光标变十字，右键退出）。仅在此模式下才能放置新传送带、自动汇流/分流<br>
-  左键点起点 A（输出口，或设备本体自动选最近可用输出口，或空白格）→ 移动预览 → 左键点终点 B（输入口/已有传送带/设备本体自动选最近可用输入口/空白格）落地<br>
-  输入口不能作为起点、输出口不能作为终点，误点会有光标提示且不会中断画线<br>
-  终点落在已有传送带上：自动插入汇流器（Merger，3 进 1 出）；终点落在已有的汇流器/分流器节点本体上：自动接入其下一个可用端口<br>
-  Alt+左键点击已有传送带（任意模式下）：原地生成分流器（Splitter，1 进 3 出）并自动进入自由模式拉出新分支
-</div>
+<div id="hint"></div>
 
 <script>
 (() => {
@@ -135,6 +128,15 @@
   const toolbar = document.getElementById('toolbar');
   const crusherIcon = document.getElementById('crusher-icon');
   const ghostIcon = document.getElementById('ghost-icon');
+  const hintEl = document.getElementById('hint');
+
+  // ---- 快捷键提示：放在角落的小胶囊，只保留核心快捷键；切换模式时内容跟着换 ----
+  const HINT_NORMAL = '[E] 传送带　|　[R] 旋转　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
+  const HINT_BELT = '[左键] 拉传送带　|　[右键/E] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
+  function updateHintText() {
+    hintEl.textContent = freeBeltMode ? HINT_BELT : HINT_NORMAL;
+    hintEl.classList.toggle('belt-mode', freeBeltMode);
+  }
 
   // ---- 世界坐标系参数 ----
   const GRID_SIZE = 50; // 每个网格单元的世界坐标尺寸(px)
@@ -751,7 +753,13 @@
     if (!fullCellPath) {
       return { points: [{ x: startPort.x, y: startPort.y }, { x: endPort.x, y: endPort.y }], cellPath: null, startDir, goalDir, invalid: true };
     }
-    fullCellPath = removeSelfOverlap(fullCellPath);
+    // 注意：这里不能再对拼接后的完整路径整体做 removeSelfOverlap。每一跳自己的
+    // A* 结果已经在上面单独去重过(消除了该跳自身因方向约束产生的"多凸出一格
+    // 再掉头"伪影)；但当路径带有手动途经点时，后一跳为了从途经点绕回终点，
+    // 完全可能合法地需要原路折返、经过前一跳已经用过的格子(比如途经点被拖到
+    // 终点的"反方向"时)。这种折返是用户故意摆出的造型，不是伪影，如果再整体
+    // 去重会把这段折返连同途经点的效果一起吃掉，导致拖动途经点时传送带看起来
+    // "纹丝不动"。
 
     const pts = [{ x: startPort.x, y: startPort.y }];
     for (const c of fullCellPath) {
@@ -1129,7 +1137,9 @@
     const path = buildScreenPath2D(screenPoints);
 
     let railColor, surfaceColor;
-    if (c.invalid) { railColor = '#7a1020'; surfaceColor = '#ff1744'; }
+    // 无效路径(拖拽途经点/设备到无法计算出直角路径的位置)：用半透明红色警示预览，
+    // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带。
+    if (c.invalid) { railColor = 'rgba(255, 23, 68, 0.35)'; surfaceColor = 'rgba(255, 23, 68, 0.55)'; }
     else if (opts.selected) { railColor = '#8a6f00'; surfaceColor = '#ffeb3b'; }
     else { railColor = '#5c3d12'; surfaceColor = '#ffa726'; }
 
@@ -1554,6 +1564,7 @@
     freeBeltPreviewPts = null;
     selectedId = null;
     selectedConnectionId = null;
+    updateHintText();
     return true;
   }
 
@@ -1673,6 +1684,7 @@
     freeBeltPreviewPts = null;
     freeBeltHoverDeviceId = null;
     canvas.style.cursor = 'default';
+    updateHintText();
     draw();
   });
 
@@ -1854,6 +1866,7 @@
       } else {
         canvas.style.cursor = 'default';
       }
+      updateHintText();
       draw();
       return;
     }
@@ -1977,6 +1990,7 @@
   // 初始化
   initView();
   resize();
+  updateHintText();
 })();
 </script>
 </body>
