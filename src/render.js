@@ -59,15 +59,67 @@ function drawGrid() {
   ctx.stroke();
 }
 
-// 选中态：设备内部叠一层极淡的黄色底色，替代早期深色地图时代黄色虚线扩边框的
-// 方案(那个方案在白色基调下对比度不够)。不用斜纹/边缘标记这类更强的纹理，纯
-// 色块更安静、不干扰阅读设备本身的标签和端口。
-const SELECTION_TINT_COLOR = 'rgba(255, 235, 59, 0.14)';
+// 沿矩形内部画一组 45° 斜纹(裁剪到矩形范围内)。选中态的设备本体、以及选中态
+// 标签文字的强调效果，两处都复用这同一个辅助函数，只是描边颜色/间距/裁剪区域
+// (矩形 vs 文字字形，见 drawHatchClippedText)不同。
+function drawDiagonalHatch(x, y, w, h, spacing, color, lineWidth) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  for (let d = -h; d < w + h; d += spacing) {
+    ctx.moveTo(x + d, y);
+    ctx.lineTo(x + d + h, y + h);
+  }
+  ctx.stroke();
+}
+
+// 选中态：设备保持白底不变，内部叠一层裁剪在矩形范围内的浅灰斜纹——纯色块(淡
+// 黄底色)试过对比度不够不够醒目，斜纹本身的线条感更贴合工业风、也不需要靠色相
+// 才能看清。
 function drawSelectionMarks(topLeft, sw, sh) {
   ctx.save();
-  ctx.fillStyle = SELECTION_TINT_COLOR;
-  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.beginPath();
+  ctx.rect(topLeft.x, topLeft.y, sw, sh);
+  ctx.clip();
+  drawDiagonalHatch(topLeft.x, topLeft.y, sw, sh, scaled(10), 'rgba(17, 17, 17, 0.18)', scaled(2));
   ctx.restore();
+}
+
+// 选中态下给标签文字本身也叠一层灰色斜纹强调：先在一块独立的离屏 canvas 上把
+// 文字画成纯黑色，再用 globalCompositeOperation='source-atop' 画斜纹——这个
+// 合成模式只在"已经有不透明像素"的地方叠色，效果就是斜纹只出现在文字笔画内部
+// (而不是文字外面的空白处)，最后把这块离屏 canvas 整体贴回主画布。离屏 canvas
+// 的合成运算只应该影响这一小块文字位图，不能直接在主 canvas 上用 source-atop
+// (那样会把斜纹叠到文字所在矩形范围内所有已经画好的像素上，包括设备边框/底色)。
+function drawHatchedLabel(text, font, cx, cy) {
+  ctx.font = font;
+  const metrics = ctx.measureText(text);
+  const padding = scaled(4);
+  const w = Math.max(1, Math.ceil(metrics.width + padding * 2));
+  const h = Math.max(1, Math.ceil((metrics.actualBoundingBoxAscent || 12) + (metrics.actualBoundingBoxDescent || 4) + padding * 2));
+
+  const off = document.createElement('canvas');
+  off.width = w;
+  off.height = h;
+  const octx = off.getContext('2d');
+  octx.font = font;
+  octx.fillStyle = '#111';
+  octx.textAlign = 'center';
+  octx.textBaseline = 'middle';
+  octx.fillText(text, w / 2, h / 2);
+
+  octx.globalCompositeOperation = 'source-atop';
+  octx.strokeStyle = 'rgba(140, 140, 140, 0.9)';
+  octx.lineWidth = Math.max(1, scaled(1.4));
+  octx.beginPath();
+  const spacing = Math.max(2, scaled(3));
+  for (let d = -h; d < w + h; d += spacing) {
+    octx.moveTo(d, 0);
+    octx.lineTo(d + h, h);
+  }
+  octx.stroke();
+
+  ctx.drawImage(off, cx - w / 2, cy - h / 2);
 }
 
 function drawDeviceRect(rect, dev, opts) {
@@ -115,14 +167,21 @@ function drawDeviceRect(rect, dev, opts) {
     ctx.strokeRect(topLeft.x - o, topLeft.y - o, sw + o * 2, sh + o * 2);
   }
 
-  // 标签：加粗黑体思源黑体，撑出工业风铭牌的感觉
+  // 标签：加粗黑体思源黑体，撑出工业风铭牌的感觉；选中态额外叠一层灰色斜纹
+  // 强调(drawHatchedLabel)，呼应设备本体的斜纹选中效果。
   if (sw > 24 && sh > 16) {
     ctx.globalAlpha = 1;
-    ctx.fillStyle = '#111';
-    ctx.font = `900 ${Math.max(10, Math.min(16, sh * 0.22))}px ${LABEL_FONT_FAMILY}`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(dev.label, topLeft.x + sw / 2, topLeft.y + sh / 2);
+    const font = `900 ${Math.max(10, Math.min(16, sh * 0.22))}px ${LABEL_FONT_FAMILY}`;
+    const cx = topLeft.x + sw / 2, cy = topLeft.y + sh / 2;
+    if (opts.selected) {
+      drawHatchedLabel(dev.label, font, cx, cy);
+    } else {
+      ctx.fillStyle = '#111';
+      ctx.font = font;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dev.label, cx, cy);
+    }
   }
 
   ctx.restore();
