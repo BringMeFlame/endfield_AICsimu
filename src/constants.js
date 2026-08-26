@@ -59,3 +59,5 @@ export const PIPE_ACCENT = 'rgba(2, 136, 209, 0.85)';
 // 颜色需要足够深，才能在白底设备上保持可见。----
 export const BELT_PORT_COLOR = '#1a1a1a';
 export const PIPE_PORT_COLOR = '#0288d1';
+// 端口箭头实心填充色：白色，呼应"设备白底彩边"的整体配色习惯，不额外发明新色相。
+export const PORT_FILL_COLOR = '#ffffff';

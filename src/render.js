@@ -1,5 +1,5 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT } from './constants.js';
 import { state, ctx } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
@@ -250,10 +250,11 @@ function angleForDir(dir) {
   return dir * Math.PI / 2;
 }
 
-// 极简风端口指示器：一个指向物料流动方向的"›"折线箭头(只描边、不填充)，比实心
-// 三角箭头更轻，呼应工业风的线条感。颜色只按端口类型区分——传送带口深色，管道
-// 口蓝色，方便一眼看出这个口能不能接管道；是否已连接不再单独换一种色相，而是
-// 用不透明度表达(未连接半透明、已连接不透明)。
+// 极简风端口指示器：一个指向物料流动方向的实心箭头——形状仍是原来那个扁扁的
+// "›"折线(尖端 s*0.6，两翼 ±s)，只是在两翼末端之间多补一条边把它闭合成三角形，
+// 内部填白(PORT_FILL_COLOR，呼应"设备白底彩边"的配色习惯，不发明新色相)，边框
+// 仍按端口类型区分——传送带口深色，管道口蓝色，方便一眼看出这个口能不能接管道；
+// 是否已连接不再单独换一种色相，而是用不透明度表达(未连接半透明、已连接不透明)。
 function drawPortMarker(p, connected, flowDir) {
   const screen = worldToScreen(p.x, p.y);
   const color = p.portKind === 'pipe' ? PIPE_PORT_COLOR : BELT_PORT_COLOR;
@@ -263,6 +264,7 @@ function drawPortMarker(p, connected, flowDir) {
   ctx.globalAlpha = connected ? 1 : 0.55;
   ctx.translate(screen.x, screen.y);
   ctx.rotate(angleForDir(flowDir));
+  ctx.fillStyle = PORT_FILL_COLOR;
   ctx.strokeStyle = color;
   // 缩小地图时如果单纯乘 state.scale，线宽会跟着无限变细直到肉眼难辨——这里
   // 设一个不随缩放继续变薄的下限(2px)，保证缩得再小箭头依旧看得清；放大时仍然
@@ -274,6 +276,8 @@ function drawPortMarker(p, connected, flowDir) {
   ctx.moveTo(-s * 0.5, -s);
   ctx.lineTo(s * 0.6, 0);
   ctx.lineTo(-s * 0.5, s);
+  ctx.closePath();
+  ctx.fill();
   ctx.stroke();
   ctx.restore();
 }
