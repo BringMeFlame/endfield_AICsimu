@@ -23,7 +23,7 @@
   - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
   - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeStartClick` 等，传送带/管道共用同一份实现）、工具栏拖拽生成新设备（含按分类生成标签页+图标 DOM 的 `buildToolbarUI()`、事件委托绑定）。
   - `src/main.js` —— 入口：`resize()`、`initView()`、`initInteractions()`、首次 `draw()`。
-  - `src/data/facilities.js` —— 独立的真实游戏基建设备数据（`FACILITIES`，按【基础生产】【合成制造】【电力】【仓储存取】【其他】分类分组，共38条），每条记录含 `footprint`/`powerCost`/`bandwidth`/`isLowProfile`/`ports`（端口 grid 坐标+朝向）等真实数值（字段含义见文件顶部注释）。已接入 `devices.js` 的 `SPAWN_TEMPLATES`/`getDevicePorts()` 和工具栏分类标签页 UI（占地/端口/旋转/寻路走真实数据），`powerCost`/`bandwidth` 仍只是数据，未接入任何供电/吞吐计算逻辑。
+  - `src/data/facilities.js` —— 独立的真实游戏基建设备数据（`FACILITIES`，按【基础生产】【合成制造】【电力】【仓储存取】【其他】分类分组，同一款游戏内建筑的不同模式/配方拆成独立记录，共45条，见记忆库 `endfield-multimode-devices-convention` 这条约定），每条记录含 `footprint`/`powerCost`/`bandwidth`/`isLowProfile`/`ports`（端口 grid 坐标+朝向）等真实数值（字段含义见文件顶部注释）；各分类内的记录顺序对齐官方基建列表顺序，不是随意排列，新增/调整记录时留意别打乱这个顺序。已接入 `devices.js` 的 `SPAWN_TEMPLATES`/`getDevicePorts()` 和工具栏分类标签页 UI（占地/端口/旋转/寻路走真实数据），`powerCost`/`bandwidth` 仍只是数据，未接入任何供电/吞吐计算逻辑。
 - 依赖安装与本地预览：
   ```bash
   npm install
@@ -63,7 +63,7 @@
   - 设备标签（含途经点等标注文字）用加粗的思源黑体（`'Noto Sans SC'`，字重 900/Black，`index.html` 已经用 `<link>` 从 Google Fonts 引入），撑粗野主义工业风的质感；`render.js` 里的 `LABEL_FONT_FAMILY` 常量统一了字体族字符串，新增文字渲染时复用它，不要另起字体声明。
   - 端口是极简的"›"折线箭头（只描边、不填充，见 `render.js` 的 `drawPortMarker`），不是早期的实心三角/圆点。传送带口 `BELT_PORT_COLOR`(深色) / 管道口 `PIPE_PORT_COLOR`(蓝色)，是否已连接用不透明度表达（未连接半透明、已连接不透明），不要再叠加第三种颜色维度。
   - 传送带是半透明琥珀色条带（`BELT_COLOR`），额外叠一圈半透明淡灰色描边（`BELT_EDGE_COLOR`/`BELT_EDGE_WIDTH`，见 `drawConnectionPath`）模仿工业钢板边缘质感；管道保持细线条、**不叠描边**，这是两者除宽度外的另一处视觉区分，新增管道相关渲染时不要顺手也给它加描边。
-  - 选中态统一用黄色系（`#ffeb3b` 描边/传送带表面）——这条specifically指 **canvas 上**设备/连线的选中态；工具栏标签页这类纯导航 UI 的"当前选中"是另一套语义，用黑底白字强调（见 `style.css` 的 `.toolbar-tab.active`），不要把两种"选中"混用同一个颜色，否则会让人误以为点了标签页会影响画布选中状态。
+  - 选中态统一用黄色系（`#ffeb3b` 描边/传送带表面）——这条specifically指 **canvas 上**设备/连线的选中态；工具栏分类标签页这类纯导航 UI 的"当前选中"是另一套语义，用下划线式标签页强调（不描边、不填充背景，选中态黑色文字+黑色底部色条，未选中灰色文字，见 `style.css` 的 `.toolbar-tab`/`.toolbar-tab.active`），和下面设备列表的"白底黑框"按钮风格刻意拉开差异，一眼能分清"这是导航"还是"这是可拖拽的设备"；不要把两种"选中"混用同一个颜色，否则会让人误以为点了标签页会影响画布选中状态。
   - 警告/无效态统一用红色系，且**半透明**，呼应设备重叠警示的 `rgba(255, 0, 0, 0.45)` / `#ff1744`（传送带无效态用的是 `rgba(255, 23, 68, 0.35/0.55)`，同一色相不同透明度）。新增任何"这个操作不合法/位置不可用"的视觉反馈，复用这个红色语义，不要发明新颜色。
   - 自由传送带模式的强调色是绿色 `rgba(102, 187, 106, ...)`（悬停高亮、拉线预览虚线、hint 胶囊的 `belt-mode` 边框）；自由管道模式对应蓝色 `PIPE_ACCENT`，代表"当前处于放置传送带/管道的操作中"。
 - **画布内一切尺寸类数值都要跟着地图缩放走**：`render.js` 里点的*位置*通过 `worldToScreen` 天然会乘 `state.scale`，但线宽/箭头大小/端口大小/圆角半径/字号这类**尺寸**不会自动跟着变，必须显式乘 `state.scale`——统一用 `render.js` 顶部的 `scaled(px)` 辅助函数（`constants.js` 里这些尺寸常量都按"缩放 1x 时的屏幕像素数"注释）。新增任何画布内绘制代码，只要用到固定像素的线宽/大小，都要过一遍 `scaled()`，不要漏改导致 zoom in 后比例失调（这是修过的真实 bug）。像 `pathfinding.js` 里 `hitTestConnection` 的命中容差这类"和视觉尺寸对应的判定阈值"也要同步乘 `state.scale`，否则缩放后点击手感会和视觉宽度对不上。
