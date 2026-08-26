@@ -32,7 +32,7 @@ export const BELT_EDGE_COLOR = 'rgba(120, 120, 120, 0.45)';
 export const HISTORY_LIMIT = 30;
 
 // ---- 快捷键提示：放在角落的小胶囊，只保留核心快捷键；切换模式时内容跟着换 ----
-export const HINT_NORMAL = '[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
+export const HINT_NORMAL = '[左键拖拽] 放置建筑　|　[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_BELT = '[左键] 拉传送带　|　[右键/E] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_PIPE = '[左键] 拉管道　|　[右键/Q] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 

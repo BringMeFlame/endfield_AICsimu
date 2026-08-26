@@ -621,7 +621,7 @@ export const FACILITIES = {
       bandwidth: 1,
       isLowProfile: true,
       ports: [
-        { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'up' },
+        { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'down' },
       ],
     },
     {
@@ -633,7 +633,7 @@ export const FACILITIES = {
       bandwidth: 1,
       isLowProfile: true,
       ports: [
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
+        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'down' },
       ],
     },
     {

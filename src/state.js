@@ -15,7 +15,7 @@ export const hintEl = document.getElementById('hint');
 // 这是 project_status.md 重构建议里提到的可选方案，在拆模块这个场景下是必须的。
 export const state = {
   // 世界坐标系参数(相机)
-  scale: 1,
+  scale: 0.6,
   offsetX: 0,
   offsetY: 0,
 

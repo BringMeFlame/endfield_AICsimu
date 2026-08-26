@@ -14,7 +14,7 @@ canvas {
 }
 #hint {
   position: fixed;
-  left: 96px;
+  left: 166px;
   bottom: 14px;
   color: #222;
   font-family: system-ui, sans-serif;
