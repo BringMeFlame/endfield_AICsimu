@@ -911,9 +911,10 @@ function bindCanvasMouseEvents() {
         const prevGridX = dev.gridX, prevGridY = dev.gridY;
         dev.gridX = Math.round(state.dragDeviceWX / GRID_SIZE);
         dev.gridY = Math.round(state.dragDeviceWY / GRID_SIZE);
+        const actuallyMoved = dev.gridX !== prevGridX || dev.gridY !== prevGridY;
         // 只在设备真的挪到了新格子时才清空手动途经点：单纯点击选中(松手时格子
         // 坐标和拖拽前一致)不应该顺手抹掉用户为这台设备的连线摆的造型。
-        if (dev.gridX !== prevGridX || dev.gridY !== prevGridY) clearWaypointsForDevice(dev.id);
+        if (actuallyMoved) clearWaypointsForDevice(dev.id);
         recomputeAllFlows();
         // 落位后如果把某条操作前合法的连线拖成 invalid(哪怕设备本身跟那条连线
         // 毫不相干，只是新位置挤占/绕开了它寻路需要用到的格子)，不接受这次移动，
@@ -921,11 +922,18 @@ function bindCanvasMouseEvents() {
         // 这里只管"别的连线被顺手拖坏"这一种情况。通用设备拖拽两个网络都要查，
         // 和 finalizeFreeConnection/createSplitterAtClick 传 PIPE_UI 时"故意只查
         // PIPE_NETWORK"的地面冲突例外不是一回事。
+        let reverted = false;
         if (state.draggingDeviceBeforeSnapshot) {
           const brokeBelt = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, BELT_NETWORK);
           const brokePipe = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, PIPE_NETWORK);
-          if (brokeBelt || brokePipe) revertLastHistoryStep();
+          if (brokeBelt || brokePipe) {
+            revertLastHistoryStep();
+            reverted = true;
+          }
         }
+        // 真的挪动过位置(不是单纯点击选中)且这次移动被接受时，落位后自动取消选中，
+        // 不需要用户再点一下空白处才能清掉高亮——单纯点击选中的手感不受影响。
+        if (actuallyMoved && !reverted) state.selectedId = null;
       }
     }
     state.draggingDeviceId = null;
