@@ -431,6 +431,23 @@ export function recomputeAllFlows() {
   recomputeAllPipeConnections();
 }
 
+// 拖拽设备挪位后，之前为旧位置手动摆放的途经点(菱形手柄)大概率不再贴合新走线、
+// 甚至会把路径挤成绕远路乃至 invalid，观感上像是"拖不动"。设备本身的位置一旦
+// 变化，与它直接相连(输入或输出)的连线就应当放弃手动造型、按新位置重新走一条
+// A* 最优路径，而不是保留旧途经点硬凑——因此在 recomputeAllFlows() 之前调用本
+// 函数清空这些连线的 waypoints。只清空与该设备直接相连的连线，不影响其它跟这次
+// 移动只是"路径恰好经过"的连线(那些连线的手动造型是用户为了绕开别的东西特意
+// 摆的，跟这台设备无关，不应该被顺手清掉)。
+export function clearWaypointsForDevice(deviceId) {
+  for (const network of [BELT_NETWORK, PIPE_NETWORK]) {
+    for (const c of network.getConns()) {
+      if ((c.fromDeviceId === deviceId || c.toDeviceId === deviceId) && c.waypoints && c.waypoints.length) {
+        c.waypoints = [];
+      }
+    }
+  }
+}
+
 // 在所有连线中查找经过 (col,row) 这一格的连线及其在该格的进入/离开方向，
 // 用于自动汇流(终点落在已有传送带上)和 Alt+点击生成分流器。
 // 判断 (col,row) 这一格是否正好是某条连线"悬空的自由端点"(fromCell 未接设备的
