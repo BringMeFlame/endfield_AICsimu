@@ -183,7 +183,7 @@ function drawDeviceRect(rect, dev, opts) {
   // 重叠警示刻意区分开，两者同时出现时也都能看清，见 constants.js
   // POWER_WARNING_COLOR 的说明)。
   if (opts.unpowered) {
-    const r = scaled(7);
+    const r = scaled(17); // 大半个格子那么大(GRID_SIZE=50 时直径约占 68%)，之前 scaled(7) 太小不显眼
     const bx = topLeft.x + sw, by = topLeft.y;
     ctx.beginPath();
     ctx.arc(bx, by, r, 0, Math.PI * 2);
