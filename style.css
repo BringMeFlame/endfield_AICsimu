@@ -37,6 +37,25 @@ canvas {
   border-color: rgba(2, 136, 209, 0.7);
 }
 
+#power-summary {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  color: #222;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  user-select: none;
+  z-index: 5;
+  white-space: nowrap;
+}
+
 #toolbar {
   position: fixed;
   top: 0;

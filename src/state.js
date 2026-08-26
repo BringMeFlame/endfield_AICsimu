@@ -6,6 +6,7 @@ export const toolbarTabs = document.getElementById('toolbar-tabs');
 export const toolbarIcons = document.getElementById('toolbar-icons');
 export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
+export const powerSummaryEl = document.getElementById('power-summary');
 
 // ---- 全局可变状态 ----
 // 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的

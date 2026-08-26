@@ -1,8 +1,8 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT } from './constants.js';
-import { state, ctx } from './state.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT, POWER_WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
+import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 
 // 设备标签用的思源黑体 Black 字重(index.html 已引入 Google Fonts 的 Noto Sans SC)，
@@ -179,6 +179,26 @@ function drawDeviceRect(rect, dev, opts) {
     drawSelectionMarks(topLeft, sw, sh);
   }
 
+  // 断电警示：只在设备右上角画一个橙色圆形感叹号徽标，不改边框/填充颜色(和
+  // 重叠警示刻意区分开，两者同时出现时也都能看清，见 constants.js
+  // POWER_WARNING_COLOR 的说明)。
+  if (opts.unpowered) {
+    const r = scaled(7);
+    const bx = topLeft.x + sw, by = topLeft.y;
+    ctx.beginPath();
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.fillStyle = POWER_WARNING_COLOR;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, scaled(1.5));
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${Math.max(8, r * 1.3)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('!', bx, by + r * 0.05);
+  }
+
   // 自由传送带模式下悬停在设备本体(非精确端口)上：高亮提示"点击即可自动接入最近端口"
   if (opts.freeBeltHover) {
     ctx.lineWidth = scaled(3);
@@ -229,6 +249,7 @@ function drawDeviceRect(rect, dev, opts) {
 
 function drawDevices() {
   const collidingIds = computeCollidingIds();
+  const unpoweredIds = computeUnpoweredIds();
   for (const dev of state.devices) {
     const pos = effectiveGridPos(dev);
     const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
@@ -239,7 +260,8 @@ function drawDevices() {
       colliding: collidingIds.has(dev.id) || dev.groundConflict === true,
       selected: dev.id === state.selectedId,
       freeBeltHover: dev.id === state.freeBeltHoverDeviceId,
-      freePipeHover: dev.id === state.freePipeHoverDeviceId
+      freePipeHover: dev.id === state.freePipeHoverDeviceId,
+      unpowered: unpoweredIds.has(dev.id)
     });
     drawDevicePorts(dev, pos);
   }
@@ -565,6 +587,40 @@ function drawFreePipePreview() {
   ctx.restore();
 }
 
+// 选中供电桩/中继器时画出它的方形供电范围，方便规划布局；不常驻显示，避免
+// 多个供电设备的范围叠在一起把画面弄乱(用户已确认的设计选择)。
+function drawSelectedPowerRange() {
+  const dev = state.devices.find(d => d.id === state.selectedId);
+  if (!dev) return;
+  const rangeRect = getPowerRangeRect(dev);
+  if (!rangeRect) return;
+
+  const rect = getDeviceRectWorld(rangeRect.gridX, rangeRect.gridY, rangeRect.w, rangeRect.h);
+  const topLeft = worldToScreen(rect.x, rect.y);
+  const sw = rect.w * state.scale;
+  const sh = rect.h * state.scale;
+
+  ctx.save();
+  ctx.fillStyle = POWER_RANGE_FILL;
+  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.lineWidth = scaled(2);
+  ctx.setLineDash([scaled(8), scaled(5)]);
+  ctx.strokeStyle = POWER_RANGE_STROKE;
+  ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// 右上角常驻的总功率读数：所有已放置设备 powerCost 之和(正=供电、负=耗电)，
+// 纯派生数据，draw() 本身就是"每次状态变化后都会被调用"的统一入口，这里跟着
+// 现算现刷新即可，不需要像 recomputeAllFlows() 那样另外找调用点。
+function updatePowerSummary() {
+  if (!powerSummaryEl) return;
+  const total = state.devices.reduce((sum, d) => sum + (d.powerCost || 0), 0);
+  const sign = total > 0 ? '+' : '';
+  powerSummaryEl.textContent = `总功率: ${sign}${total}`;
+}
+
 function drawSpawnPreview() {
   if (!state.spawnPreview || !state.spawningTemplateKey) return;
   const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
@@ -622,6 +678,7 @@ function drawCursorTooltip() {
 
 export function draw() {
   drawGrid();
+  drawSelectedPowerRange(); // 供电范围画在最底层，不盖住传送带/设备
   drawConnections();      // 传送带 + 传送带物流桥
   drawDevices();          // 设备遮住传送带(不变)
   drawWaypoints();
@@ -631,4 +688,5 @@ export function draw() {
   drawFreeBeltPreview();
   drawFreePipePreview();
   drawCursorTooltip();
+  updatePowerSummary();
 }

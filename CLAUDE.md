@@ -23,7 +23,7 @@
   - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
   - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeStartClick` 等，传送带/管道共用同一份实现）、工具栏拖拽生成新设备（含按分类生成标签页+图标 DOM 的 `buildToolbarUI()`、事件委托绑定）。
   - `src/main.js` —— 入口：`resize()`、`initView()`、`initInteractions()`、首次 `draw()`。
-  - `src/data/facilities.js` —— 独立的真实游戏基建设备数据（`FACILITIES`，按【基础生产】【合成制造】【电力】【仓储存取】【其他】分类分组，同一款游戏内建筑的不同模式/配方拆成独立记录，共45条，见记忆库 `endfield-multimode-devices-convention` 这条约定），每条记录含 `footprint`/`powerCost`/`bandwidth`/`isLowProfile`/`ports`（端口 grid 坐标+朝向）等真实数值（字段含义见文件顶部注释）；各分类内的记录顺序对齐官方基建列表顺序，不是随意排列，新增/调整记录时留意别打乱这个顺序。已接入 `devices.js` 的 `SPAWN_TEMPLATES`/`getDevicePorts()` 和工具栏分类标签页 UI（占地/端口/旋转/寻路走真实数据），`powerCost`/`bandwidth` 仍只是数据，未接入任何供电/吞吐计算逻辑。
+  - `src/data/facilities.js` —— 独立的真实游戏基建设备数据（`FACILITIES`，按【基础生产】【合成制造】【电力】【仓储存取】【其他】分类分组，同一款游戏内建筑的不同模式/配方拆成独立记录，共45条，见记忆库 `endfield-multimode-devices-convention` 这条约定），每条记录含 `footprint`/`powerCost`/`needsPower`/`powerRange`/`bandwidth`/`isLowProfile`/`ports`（端口 grid 坐标+朝向）等真实数值（字段含义见文件顶部注释）；各分类内的记录顺序对齐官方基建列表顺序，不是随意排列，新增/调整记录时留意别打乱这个顺序。已接入 `devices.js` 的 `SPAWN_TEMPLATES`/`getDevicePorts()` 和工具栏分类标签页 UI（占地/端口/旋转/寻路走真实数据），`powerCost`/`needsPower`/`powerRange` 已接入供电覆盖判定（`devices.js` 的 `computeUnpoweredIds`/`getPowerRangeRect`）与右上角总功率显示，`bandwidth` 仍只是数据，未接入任何吞吐计算逻辑。
 - 依赖安装与本地预览：
   ```bash
   npm install

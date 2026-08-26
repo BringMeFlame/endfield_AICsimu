@@ -61,3 +61,13 @@ export const BELT_PORT_COLOR = '#1a1a1a';
 export const PIPE_PORT_COLOR = '#0288d1';
 // 端口箭头实心填充色：白色，呼应"设备白底彩边"的整体配色习惯，不额外发明新色相。
 export const PORT_FILL_COLOR = '#ffffff';
+
+// ---- 电力系统调色板 ----
+// 断电警示专用橙色，特意和现有重叠警示红(#ff1744)/无效连线红拉开色相，避免
+// 一个设备同时"重叠"又"断电"时两种警示互相盖住看不清(见 render.js drawDeviceRect
+// 的断电徽标、devices.js 的 computeUnpoweredIds)。
+export const POWER_WARNING_COLOR = '#ff9100';
+// 选中供电桩/中继器时画出的方形供电范围：半透明黄橙色，明显淡于断电警示，
+// 因为这是常驻在被选中设备周围的大面积覆盖框，不需要抢眼，只需要能看清边界。
+export const POWER_RANGE_FILL = 'rgba(255, 193, 7, 0.12)';
+export const POWER_RANGE_STROKE = 'rgba(255, 160, 0, 0.55)';

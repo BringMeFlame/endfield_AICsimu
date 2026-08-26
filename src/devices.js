@@ -28,7 +28,10 @@ const FACILITY_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list])
     color: '#ffffff',
     borderColor: '#111111',
     label: f.name,
-    ports: f.ports
+    ports: f.ports,
+    powerCost: f.powerCost,
+    needsPower: !!f.needsPower,
+    powerRange: f.powerRange
   }))
 );
 
@@ -99,6 +102,37 @@ export function computeCollidingIds() {
     }
   }
   return colliding;
+}
+
+// ---- 电力覆盖判定 ----
+// 供电桩/中继器（含息壤版）以自身占地中心为中心产生一个正方形无线供电范围
+// (facilities.js 的 powerRange 字段，供电桩 12、中继器 7)，需要用电的设备
+// (needsPower === true，按分类固化在 facilities.js 里，见该文件字段说明)只要
+// 占地和某个供电范围有部分重叠就算通电。和 computeCollidingIds() 一样是纯
+// 派生计算，每次从 state.devices 现算，不缓存、不进 history.js 的撤销栈。
+export function getPowerRangeRect(dev) {
+  if (!dev.powerRange) return null;
+  const pos = effectiveGridPos(dev);
+  const cx = pos.gridX + dev.w / 2;
+  const cy = pos.gridY + dev.h / 2;
+  const range = dev.powerRange;
+  return { gridX: cx - range / 2, gridY: cy - range / 2, w: range, h: range };
+}
+
+// 计算所有需要用电、但不在任何供电范围内的设备 id 集合
+export function computeUnpoweredIds() {
+  const rangeRects = state.devices
+    .map(d => getPowerRangeRect(d))
+    .filter(r => r !== null);
+  const unpowered = new Set();
+  for (const dev of state.devices) {
+    if (!dev.needsPower) continue;
+    const pos = effectiveGridPos(dev);
+    const rect = { gridX: pos.gridX, gridY: pos.gridY, w: dev.w, h: dev.h };
+    const powered = rangeRects.some(r => rectsOverlap(rect, r));
+    if (!powered) unpowered.add(dev.id);
+  }
+  return unpowered;
 }
 
 export function hitTestDevice(worldX, worldY) {

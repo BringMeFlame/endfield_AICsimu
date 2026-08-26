@@ -1264,7 +1264,13 @@ function bindToolbarSpawnEvents() {
         // 落地时整体拷贝一份到实例上，供 getDevicePorts() 的 facilityDevicePorts
         // 分支使用，不用在渲染/寻路时反过来查 FACILITIES——这样 cloneCanvasState()
         // 的无差别深拷贝天然就能把它带过 Ctrl+Z 撤销栈，不用额外处理。
-        ...(template.kind === 'facility' ? { facilityId: template.key, ports: template.ports } : {}),
+        ...(template.kind === 'facility' ? {
+          facilityId: template.key,
+          ports: template.ports,
+          powerCost: template.powerCost,
+          needsPower: template.needsPower,
+          powerRange: template.powerRange
+        } : {}),
         // 汇流器/分流器(含管道版)专属：mainOutEdge/mainInEdge 决定哪条边固定是
         // 出口/入口，其余边留给用户在自由传送带/管道模式里逐条连接(见
         // nodeDevicePorts)。空节点落地时从模板拷贝默认朝向，用户可以之后按 R
