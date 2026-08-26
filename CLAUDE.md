@@ -23,6 +23,7 @@
   - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
   - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeStartClick` 等，传送带/管道共用同一份实现）、工具栏拖拽生成新设备。
   - `src/main.js` —— 入口：`resize()`、`initView()`、`initInteractions()`、首次 `draw()`。
+  - `src/data/facilities.js` —— 独立的真实游戏基建设备数据（`FACILITIES`，按【基础生产】【合成制造】【电力】【仓储存取】【其他】分类分组），与 `devices.js` 里 demo 用的 `SPAWN_TEMPLATES` 解耦，目前只是数据落地，尚未接入任何运行时逻辑（工具栏生成/`getDevicePorts()`/渲染），部分设备的 `footprint` 因源数据冲突而为 `null`（见文件顶部注释），`power`/`bandwidth` 字段暂缺待补。
 - 依赖安装与本地预览：
   ```bash
   npm install
