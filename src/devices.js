@@ -53,7 +53,7 @@ const NODE_TEMPLATES = [
 ].map(t => ({
   key: t.key,
   kind: t.kind,
-  category: '分流汇流',
+  category: '物流',
   w: 1,
   h: 1,
   color: '#ffffff',

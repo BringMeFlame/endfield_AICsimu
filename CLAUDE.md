@@ -17,7 +17,7 @@
   - `src/constants.js` —— 所有 `UPPER_SNAKE_CASE` 常量（`GRID_SIZE`、`TURN_PENALTY`、`DIR_*`、`BELT_WIDTH`、`HISTORY_LIMIT`、`HINT_*` 等）。
   - `src/state.js` —— DOM 元素引用（`canvas`/`ctx`/`toolbar`/`toolbarTabs`/`toolbarIcons`/`ghostIcon`/`hintEl`，各自独立 `export`，**不在** `state` 对象里）+ 一个导出的可变 `state` 对象，装下原来所有顶层 `let`（`devices`、`connections`、`selectedId`、`freeBeltMode`、`activeToolbarCategory` 等，见下方"全局变量习惯"）。
   - `src/coords.js` —— `screenToWorld`/`worldToScreen`/`worldToCell`/`initView`。
-  - `src/devices.js` —— 设备数据模型、端口计算（`getDevicePorts`/`edgePorts`/`nodeDevicePorts`/`facilityDevicePorts`）、碰撞检测；`SPAWN_TEMPLATES` 由两部分拼接而成：`src/data/facilities.js` 的 `FACILITIES` 在模块加载时 `flatMap` 生成的真实基建设备模板，加上文件内手写的 `NODE_TEMPLATES`（汇流器/分流器/管道汇流器/管道分流器四种 1×1 节点，归在独立的"分流汇流"分类标签页——这四种不是真实游戏建筑数据，不应该也塞进 `facilities.js`）。落地新设备的代码内联在 `interactions.js` 的工具栏 mouseup 处理里，不是独立的 `spawnTemplate` 函数。
+  - `src/devices.js` —— 设备数据模型、端口计算（`getDevicePorts`/`edgePorts`/`nodeDevicePorts`/`facilityDevicePorts`）、碰撞检测；`SPAWN_TEMPLATES` 由两部分拼接而成：`src/data/facilities.js` 的 `FACILITIES` 在模块加载时 `flatMap` 生成的真实基建设备模板，加上文件内手写的 `NODE_TEMPLATES`（汇流器/分流器/管道汇流器/管道分流器四种 1×1 节点，归在独立的"物流"分类标签页，和游戏里的同名分类对应——这四种不是真实游戏建筑数据，不应该也塞进 `facilities.js`）。落地新设备的代码内联在 `interactions.js` 的工具栏 mouseup 处理里，不是独立的 `spawnTemplate` 函数。
   - `src/pathfinding.js` —— `aStarOrthogonal`、`removeSelfOverlap`、`buildBeltOccupancy`、`computePath`、`splitConnectionAtCell`、连线/途经点命中测试等。
   - `src/render.js` —— 所有 `drawXxx` 函数 + `draw()`。
   - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
