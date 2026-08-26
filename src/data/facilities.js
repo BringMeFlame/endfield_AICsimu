@@ -1,20 +1,18 @@
 // ---- 真实游戏基建设备数据（独立数据文件，与 devices.js 的 demo 占位模板解耦） ----
 // 数据来源：用户从终末地 wiki（fz.wiki）抓取的 JSON，并由用户核对 wiki 后手动
 // 取舍/修正分类与数值，覆盖【基础生产】【合成制造】【电力】【仓储存取】全部设备
-// + 【其他】里的「协议核心」「次级核心」，共 38 条。本文件只做数据落地，
-// 不接入任何运行时逻辑（SPAWN_TEMPLATES/getDevicePorts()/渲染），等其余分类的
-// power/bandwidth 数值也补齐、且需要正式接入玩法逻辑时再由后续改动接入。
+// + 【其他】里的「协议核心」「次级核心」，共 38 条，全部字段均已补齐
+// 真实数据。本文件只做数据落地，不接入任何运行时逻辑
+// （SPAWN_TEMPLATES/getDevicePorts()/渲染），等需要正式接入玩法逻辑时再由后续
+// 改动接入。
 //
 // 字段说明：
 // - id/name：原样保留源数据，不做转拼音等改造，便于和抓取脚本对照追溯。
-// - footprint：{ w, h } 网格格数，字段名对应 devices.js SPAWN_TEMPLATES 的 w/h；
-//   部分设备的端口 grid 坐标超出了 size 字段范围（对应 footprintNote 有值的那些），
-//   这些设备的 footprint 先留 null 待核实，不做任何推算。
-// - powerCost：耗电量/供电量，负数=耗电、正数=供电、0=不耗电（已由用户确认为真实
-//   值的 0，不是占位），字段名和单位原样沿用用户提供的数据，目前【基础生产】
-//   【合成制造】【仓储存取】三个分类补齐了真实值，其余分类还没有这个字段（不是
-//   0，是还没拿到数据，字段直接缺省而非填 0/null，避免和「真的是0」混淆）。
-// - bandwidth：带宽/吞吐，原样沿用用户提供的数据，缺省含义同上。
+// - footprint：{ w, h } 网格格数，字段名对应 devices.js SPAWN_TEMPLATES 的 w/h。
+// - powerCost：耗电量/供电量，负数=耗电、正数=供电、0=不耗电不供电，字段名和
+//   单位原样沿用用户提供的数据（例如「协议核心」+200 为供电、「热能池」+150
+//   为供电，其余耗电设备均为负数）。
+// - bandwidth：带宽/吞吐，原样沿用用户提供的数据。
 // - isLowProfile：原样保留，目前仅「仓库存货口」「仓库取货口」为 true，用于区分
 //   矮桩体设备。
 // - ports：直接贴近源数据的端口坐标信息，不收窄成某侧几个口这种有损的聚合形式。
@@ -423,16 +421,20 @@ export const FACILITIES = {
     {
       id: 'dev_供电桩',
       name: '供电桩',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 2, h: 2 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [],
     },
     {
       id: 'dev_息壤供电桩',
       name: '息壤供电桩',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 2, h: 2 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [],
     },
@@ -441,6 +443,8 @@ export const FACILITIES = {
       name: '中继器',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [],
     },
@@ -449,14 +453,18 @@ export const FACILITIES = {
       name: '息壤中继器',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [],
     },
     {
       id: 'dev_热能池',
       name: '热能池',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 2, h: 2 },
       footprintNote: null,
+      powerCost: 150,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_1', type: 'item_input', grid: [0, 1], dir: 'left' },
@@ -607,17 +615,12 @@ export const FACILITIES = {
     {
       id: 'dev_协议核心',
       name: '协议核心',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 9, h: 9 },
+      footprintNote: null,
+      powerCost: 200,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
-        { id: 'belt_in_1_8', type: 'item_input', grid: [1, 8], dir: 'left' },
-        { id: 'belt_in_2_8', type: 'item_input', grid: [2, 8], dir: 'right' },
-        { id: 'belt_in_3_8', type: 'item_input', grid: [3, 8], dir: 'left' },
-        { id: 'belt_in_4_8', type: 'item_input', grid: [4, 8], dir: 'left' },
-        { id: 'belt_in_5_8', type: 'item_input', grid: [5, 8], dir: 'left' },
-        { id: 'belt_in_6_8', type: 'item_input', grid: [6, 8], dir: 'left' },
-        { id: 'belt_in_7_8', type: 'item_input', grid: [7, 8], dir: 'left' },
         { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'up' },
         { id: 'belt_in_2_0', type: 'item_input', grid: [2, 0], dir: 'up' },
         { id: 'belt_in_3_0', type: 'item_input', grid: [3, 0], dir: 'up' },
@@ -625,28 +628,30 @@ export const FACILITIES = {
         { id: 'belt_in_5_0', type: 'item_input', grid: [5, 0], dir: 'up' },
         { id: 'belt_in_6_0', type: 'item_input', grid: [6, 0], dir: 'up' },
         { id: 'belt_in_7_0', type: 'item_input', grid: [7, 0], dir: 'up' },
-        { id: 'belt_out_8_1', type: 'item_output', grid: [8, 1], dir: 'right' },
-        { id: 'belt_out_8_4', type: 'item_output', grid: [8, 4], dir: 'right' },
-        { id: 'belt_out_8_7', type: 'item_output', grid: [8, 7], dir: 'right' },
+        { id: 'belt_in_1_8', type: 'item_input', grid: [1, 8], dir: 'down' },
+        { id: 'belt_in_2_8', type: 'item_input', grid: [2, 8], dir: 'down' },
+        { id: 'belt_in_3_8', type: 'item_input', grid: [3, 8], dir: 'down' },
+        { id: 'belt_in_4_8', type: 'item_input', grid: [4, 8], dir: 'down' },
+        { id: 'belt_in_5_8', type: 'item_input', grid: [5, 8], dir: 'down' },
+        { id: 'belt_in_6_8', type: 'item_input', grid: [6, 8], dir: 'down' },
+        { id: 'belt_in_7_8', type: 'item_input', grid: [7, 8], dir: 'down' },
         { id: 'belt_out_0_1', type: 'item_output', grid: [0, 1], dir: 'left' },
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'left' },
         { id: 'belt_out_0_7', type: 'item_output', grid: [0, 7], dir: 'left' },
+        { id: 'belt_out_8_1', type: 'item_output', grid: [8, 1], dir: 'right' },
+        { id: 'belt_out_8_4', type: 'item_output', grid: [8, 4], dir: 'right' },
+        { id: 'belt_out_8_7', type: 'item_output', grid: [8, 7], dir: 'right' },
       ],
     },
     {
       id: 'dev_次级核心',
       name: '次级核心',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 9, h: 9 },
+      footprintNote: null,
+      powerCost: 0,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
-        { id: 'belt_in_1_8', type: 'item_input', grid: [1, 8], dir: 'left' },
-        { id: 'belt_in_2_8', type: 'item_input', grid: [2, 8], dir: 'right' },
-        { id: 'belt_in_3_8', type: 'item_input', grid: [3, 8], dir: 'left' },
-        { id: 'belt_in_4_8', type: 'item_input', grid: [4, 8], dir: 'left' },
-        { id: 'belt_in_5_8', type: 'item_input', grid: [5, 8], dir: 'left' },
-        { id: 'belt_in_6_8', type: 'item_input', grid: [6, 8], dir: 'left' },
-        { id: 'belt_in_7_8', type: 'item_input', grid: [7, 8], dir: 'left' },
         { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'up' },
         { id: 'belt_in_2_0', type: 'item_input', grid: [2, 0], dir: 'up' },
         { id: 'belt_in_3_0', type: 'item_input', grid: [3, 0], dir: 'up' },
@@ -654,12 +659,19 @@ export const FACILITIES = {
         { id: 'belt_in_5_0', type: 'item_input', grid: [5, 0], dir: 'up' },
         { id: 'belt_in_6_0', type: 'item_input', grid: [6, 0], dir: 'up' },
         { id: 'belt_in_7_0', type: 'item_input', grid: [7, 0], dir: 'up' },
-        { id: 'belt_out_8_1', type: 'item_output', grid: [8, 1], dir: 'right' },
-        { id: 'belt_out_8_4', type: 'item_output', grid: [8, 4], dir: 'right' },
-        { id: 'belt_out_8_7', type: 'item_output', grid: [8, 7], dir: 'right' },
+        { id: 'belt_in_1_8', type: 'item_input', grid: [1, 8], dir: 'down' },
+        { id: 'belt_in_2_8', type: 'item_input', grid: [2, 8], dir: 'down' },
+        { id: 'belt_in_3_8', type: 'item_input', grid: [3, 8], dir: 'down' },
+        { id: 'belt_in_4_8', type: 'item_input', grid: [4, 8], dir: 'down' },
+        { id: 'belt_in_5_8', type: 'item_input', grid: [5, 8], dir: 'down' },
+        { id: 'belt_in_6_8', type: 'item_input', grid: [6, 8], dir: 'down' },
+        { id: 'belt_in_7_8', type: 'item_input', grid: [7, 8], dir: 'down' },
         { id: 'belt_out_0_1', type: 'item_output', grid: [0, 1], dir: 'left' },
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'left' },
         { id: 'belt_out_0_7', type: 'item_output', grid: [0, 7], dir: 'left' },
+        { id: 'belt_out_8_1', type: 'item_output', grid: [8, 1], dir: 'right' },
+        { id: 'belt_out_8_4', type: 'item_output', grid: [8, 4], dir: 'right' },
+        { id: 'belt_out_8_7', type: 'item_output', grid: [8, 7], dir: 'right' },
       ],
     },
   ],
