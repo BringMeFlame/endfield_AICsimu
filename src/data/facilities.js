@@ -1,16 +1,19 @@
 // ---- 真实游戏基建设备数据（独立数据文件，与 devices.js 的 demo 占位模板解耦） ----
-// 数据来源：用户从终末地 wiki（fz.wiki）抓取的 JSON（devices_ultimate.json），并由用户
-// 核对 wiki 后手动取舍/修正分类，覆盖【基础生产】【合成制造】【电力】【仓储存取】
-// 全部设备 + 【其他】里的「协议核心」「次级核心」，共 38 条。本文件只做
-// 数据落地，不接入任何运行时逻辑（SPAWN_TEMPLATES/getDevicePorts()/渲染），等真实
-// power/bandwidth 数值补齐、且需要正式接入玩法逻辑时再由后续改动接入。
+// 数据来源：用户从终末地 wiki（fz.wiki）抓取的 JSON，并由用户核对 wiki 后手动
+// 取舍/修正分类与数值，覆盖【基础生产】【合成制造】【电力】【仓储存取】全部设备
+// + 【其他】里的「协议核心」「次级核心」，共 38 条。本文件只做数据落地，
+// 不接入任何运行时逻辑（SPAWN_TEMPLATES/getDevicePorts()/渲染），等其余分类的
+// power/bandwidth 数值也补齐、且需要正式接入玩法逻辑时再由后续改动接入。
 //
 // 字段说明：
 // - id/name：原样保留源数据，不做转拼音等改造，便于和抓取脚本对照追溯。
 // - footprint：{ w, h } 网格格数，字段名对应 devices.js SPAWN_TEMPLATES 的 w/h；
-//   源数据里所有设备的 size 都是 [3, 3]，但有部分设备的端口 grid 坐标已经超出了
-//   3x3 范围（对应 footprintNote 有值的那些），说明 size 是抓取脚本的占位默认值、
-//   不是真实值，这些设备的 footprint 先留 null 待核实，不做任何推算。
+//   部分设备的端口 grid 坐标超出了 size 字段范围（对应 footprintNote 有值的那些），
+//   这些设备的 footprint 先留 null 待核实，不做任何推算。
+// - powerCost：耗电量/供电量，负数=耗电、正数=供电，字段名和单位原样沿用用户
+//   提供的数据，目前只有【基础生产】分类补齐了真实值，其余分类还没有这个字段
+//   （不是 0，是还没拿到数据，字段直接缺省而非填 0/null，避免和「真的是0」混淆）。
+// - bandwidth：带宽/吞吐，原样沿用用户提供的数据，缺省含义同上。
 // - isLowProfile：原样保留，目前仅「仓库存货口」「仓库取货口」为 true，用于区分
 //   矮桩体设备。
 // - ports：直接贴近源数据的端口坐标信息，不收窄成某侧几个口这种有损的聚合形式。
@@ -19,8 +22,6 @@
 //   表示端口朝外的朝向——本项目 DIR_N/E/S/W（见 constants.js）是「到达这一格时
 //   的移动方向」，语义不同，不能直接划等号，后续真正接入 getDevicePorts() 时需要
 //   专门写一层映射，本次先原样保留源数据坐标系。
-// - 本次没有写入 power（耗电量/供电量）、bandwidth（带宽）字段：源数据里这两项
-//   全部是占位 0，不是真实游戏数值，等后续补充真实数据后再追加。
 // - 「反应池」「扩增反应池」（合成制造）是纯占位条目（footprint/ports 均为空），
 //   用户确认这两个设备存在但具体数据还在整理，先占位保留名字，后续单独补充。
 export const FACILITIES = {
@@ -30,6 +31,8 @@ export const FACILITIES = {
       name: '配件机',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -20,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
@@ -45,6 +48,8 @@ export const FACILITIES = {
       name: '精炼炉',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -5,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
@@ -62,6 +67,8 @@ export const FACILITIES = {
       name: '粉碎机',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -5,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
@@ -77,6 +84,8 @@ export const FACILITIES = {
       name: '废水处理机',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -50,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -85,16 +94,18 @@ export const FACILITIES = {
     {
       id: 'dev_种植机',
       name: '种植机',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 5, h: 5 },
+      footprintNote: null,
+      powerCost: -20,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
-        { id: 'belt_in_0_4', type: 'item_input', grid: [0, 4], dir: 'left' },
-        { id: 'belt_in_1_4', type: 'item_input', grid: [1, 4], dir: 'left' },
-        { id: 'belt_in_2_4', type: 'item_input', grid: [2, 4], dir: 'right' },
-        { id: 'belt_in_3_4', type: 'item_input', grid: [3, 4], dir: 'left' },
-        { id: 'belt_in_4_4', type: 'item_input', grid: [4, 4], dir: 'left' },
-        { id: 'pipe_in_0_2', type: 'fluid_input', grid: [0, 2], dir: 'down' },
+        { id: 'belt_in_0_4', type: 'item_input', grid: [0, 4], dir: 'down' },
+        { id: 'belt_in_1_4', type: 'item_input', grid: [1, 4], dir: 'down' },
+        { id: 'belt_in_2_4', type: 'item_input', grid: [2, 4], dir: 'down' },
+        { id: 'belt_in_3_4', type: 'item_input', grid: [3, 4], dir: 'down' },
+        { id: 'belt_in_4_4', type: 'item_input', grid: [4, 4], dir: 'down' },
+        { id: 'pipe_in_0_2', type: 'fluid_input', grid: [0, 2], dir: 'left' },
         { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
         { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
         { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
@@ -105,15 +116,17 @@ export const FACILITIES = {
     {
       id: 'dev_采种机',
       name: '采种机',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 5, h: 5 },
+      footprintNote: null,
+      powerCost: -10,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
-        { id: 'belt_in_0_4', type: 'item_input', grid: [0, 4], dir: 'left' },
-        { id: 'belt_in_1_4', type: 'item_input', grid: [1, 4], dir: 'left' },
-        { id: 'belt_in_2_4', type: 'item_input', grid: [2, 4], dir: 'right' },
-        { id: 'belt_in_3_4', type: 'item_input', grid: [3, 4], dir: 'left' },
-        { id: 'belt_in_4_4', type: 'item_input', grid: [4, 4], dir: 'left' },
+        { id: 'belt_in_0_4', type: 'item_input', grid: [0, 4], dir: 'down' },
+        { id: 'belt_in_1_4', type: 'item_input', grid: [1, 4], dir: 'down' },
+        { id: 'belt_in_2_4', type: 'item_input', grid: [2, 4], dir: 'down' },
+        { id: 'belt_in_3_4', type: 'item_input', grid: [3, 4], dir: 'down' },
+        { id: 'belt_in_4_4', type: 'item_input', grid: [4, 4], dir: 'down' },
         { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
         { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
         { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
@@ -126,6 +139,8 @@ export const FACILITIES = {
       name: '塑形机',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -10,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
