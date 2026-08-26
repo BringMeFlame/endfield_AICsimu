@@ -124,23 +124,29 @@ function drawHatchedLabel(text, font, cx, cy) {
 
 // 标签自动换行：设备名称带上模式后缀(如"（气液）")后，在占地较小的设备上
 // 单行会画出矩形边界、甚至盖住端口箭头。中日韩文本没有空格可断词，这里按
-// 字符边界贪心换行——只要加上下一个字符会超宽就另起一行，直到用完整个
-// 标签字符串；不做超出设备高度后的截断处理，目前所有设备标签在现有占地
-// 下最多两三行都能放得下，真出现放不下的极端情况再按需补处理。
+// 字符边界贪心换行——只要加上下一个字符会超宽就另起一行。优先在"（"前断行
+// (设备名一行、模式后缀单独一行，视觉上比在名字中间硬断更整齐)：先把文本
+// 切成"括号前"/"括号及之后"两段各自换行，而不是整段一起贪心，这样只要两段
+// 各自能塞进一行，"（"前就一定会换行；某一段本身还是太宽时，段内继续按字符
+// 贪心换行兜底。
 function wrapLabelLines(text, font, maxWidth) {
   ctx.font = font;
+  const bracketIdx = text.indexOf('（');
+  const segments = bracketIdx > 0 ? [text.slice(0, bracketIdx), text.slice(bracketIdx)] : [text];
   const lines = [];
-  let line = '';
-  for (const ch of text) {
-    const next = line + ch;
-    if (line && ctx.measureText(next).width > maxWidth) {
-      lines.push(line);
-      line = ch;
-    } else {
-      line = next;
+  for (const seg of segments) {
+    let line = '';
+    for (const ch of seg) {
+      const next = line + ch;
+      if (line && ctx.measureText(next).width > maxWidth) {
+        lines.push(line);
+        line = ch;
+      } else {
+        line = next;
+      }
     }
+    if (line) lines.push(line);
   }
-  if (line) lines.push(line);
   return lines;
 }
 
@@ -197,8 +203,15 @@ function drawDeviceRect(rect, dev, opts) {
     const font = `900 ${fontSize}px ${LABEL_FONT_FAMILY}`;
     const cx = topLeft.x + sw / 2, cy = topLeft.y + sh / 2;
     const maxWidth = Math.max(1, sw - scaled(8));
-    const lines = wrapLabelLines(dev.label, font, maxWidth);
+    let lines = wrapLabelLines(dev.label, font, maxWidth);
     const lineHeight = fontSize * 1.15;
+    // 换行只解决横向超宽，缩到极限时占地本身矮到连换行后的行数都塞不下
+    // (比如"塑形机（气体）"这种带模式后缀的长标签)——这种程度基本只看得清
+    // 大概的方块布局，具体标注已经没有辨识意义，直接缩略成"首字+…"。
+    const maxLines = Math.max(1, Math.floor((sh - scaled(4)) / lineHeight));
+    if (lines.length > maxLines) {
+      lines = [Array.from(dev.label)[0] + '…'];
+    }
     const startY = cy - (lines.length - 1) * lineHeight / 2;
     if (opts.selected) {
       lines.forEach((ln, i) => drawHatchedLabel(ln, font, cx, startY + i * lineHeight));
