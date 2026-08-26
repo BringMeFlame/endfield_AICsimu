@@ -41,16 +41,16 @@ canvas {
   position: fixed;
   top: 0;
   left: 0;
-  width: 210px;
+  width: 150px;
   height: 100vh;
   background: rgba(255, 255, 255, 0.96);
   border-right: 1px solid rgba(0, 0, 0, 0.12);
   box-sizing: border-box;
-  padding: 16px 0;
+  padding: 16px 0 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   z-index: 10;
   user-select: none;
 }
@@ -58,51 +58,53 @@ canvas {
   color: #888;
   font-family: system-ui, sans-serif;
   font-size: 11px;
-  margin-bottom: 4px;
 }
-/* 分类标签栏：横向换行排布，选中态用黑底白字强调(工具栏导航专用视觉，
-   不借用 canvas 上"选中"的黄色语义，避免两种"选中"混在一起) */
+/* 分类标签栏：下划线式标签页(参考浏览器/Material标签的视觉惯例)，
+   不描边、不填充，靠字重+底部色条区分选中态，和下面设备列表的"描边方块"
+   风格拉开差异，一眼就能看出"这是导航，不是可拖拽的设备"。选中态沿用
+   黑色强调(工具栏导航专用语义，不借用 canvas 上"选中"的黄色语义)。 */
 #toolbar-tabs {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
+  gap: 2px 10px;
+  width: 100%;
+  padding: 0 8px 6px;
+  box-sizing: border-box;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
 }
 .toolbar-tab {
-  padding: 4px 8px;
-  background: #ffffff;
-  border: 2px solid #111;
-  border-radius: 4px;
+  padding: 4px 2px;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
   font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: 12px;
   font-weight: 900;
-  color: #111;
+  color: #999;
   cursor: pointer;
 }
 .toolbar-tab.active {
-  background: #111;
-  color: #fff;
+  color: #111;
+  border-bottom-color: #111;
 }
-/* 当前分类的设备图标：可换行网格，超出高度时滚动，避免设备数量多时
+/* 当前分类的设备列表：缩窄的单列长列表，超出高度时滚动，避免设备数量多时
    撑爆整个左侧栏 */
 #toolbar-icons {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-content: flex-start;
-  gap: 10px;
-  padding: 4px 10px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
   overflow-y: auto;
   flex: 1;
   width: 100%;
   box-sizing: border-box;
 }
 .device-icon {
-  width: 56px;
-  height: 56px;
+  width: 100%;
+  min-height: 40px;
   background: #ffffff;
-  border: 3px solid #111;
+  border: 2px solid #111;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -114,6 +116,8 @@ canvas {
   color: #111;
   cursor: grab;
   box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  box-sizing: border-box;
+  padding: 6px 4px;
 }
 .device-icon:active {
   cursor: grabbing;
