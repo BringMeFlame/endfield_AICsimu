@@ -1,48 +1,43 @@
 // ---- 真实游戏基建设备数据（独立数据文件，与 devices.js 的 demo 占位模板解耦） ----
-// 数据来源：用户从终末地 wiki（fz.wiki）抓取的 JSON（devices_ultimate.json），
-// 覆盖【基础生产】【合成制造】【电力】【仓储存取】全部设备 + 【其他】里的
-// 「协议核心」「次级核心」，共 49 条。本文件只做数据落地，
-// 不接入任何运行时逻辑（SPAWN_TEMPLATES/getDevicePorts()/渲染），等真实
+// 数据来源：用户从终末地 wiki（fz.wiki）抓取的 JSON（devices_ultimate.json），并由用户
+// 核对 wiki 后手动取舍/修正分类，覆盖【基础生产】【合成制造】【电力】【仓储存取】
+// 全部设备 + 【其他】里的「协议核心」「次级核心」，共 38 条。本文件只做
+// 数据落地，不接入任何运行时逻辑（SPAWN_TEMPLATES/getDevicePorts()/渲染），等真实
 // power/bandwidth 数值补齐、且需要正式接入玩法逻辑时再由后续改动接入。
 //
 // 字段说明：
 // - id/name：原样保留源数据，不做转拼音等改造，便于和抓取脚本对照追溯。
 // - footprint：{ w, h } 网格格数，字段名对应 devices.js SPAWN_TEMPLATES 的 w/h；
-//   源数据里所有设备的 size 都是 [3, 3]，但有 16 条设备的端口 grid 坐标已经
-//   超出了 3x3 范围（对应 footprintNote 有值的那些），说明 size 是抓取脚本
-//   的占位默认值、不是真实值，这些设备的 footprint 先留 null 待核实，不做
-//   任何推算。
-// - isLowProfile：原样保留，目前仅「仓库存货口」「仓库取货口」为 true，
-//   用于区分矮桩体设备。
-// - ports：直接贴近源数据的端口坐标信息，不收窄成某侧几个口这种有损的
-//   聚合形式。type 取值 item_input/item_output/fluid_input/fluid_output
-//   （item = 本项目的传送带口 belt，fluid = 本项目的管道口 pipe）；dir 是
-//   up/down/left/right，表示端口朝外的朝向——本项目 DIR_N/E/S/W（见
-//   constants.js）是「到达这一格时的移动方向」，语义不同，不能直接
-//   划等号，后续真正接入 getDevicePorts() 时需要专门写一层映射，本次先原
-//   样保留源数据坐标系。
-// - 本次没有写入 power（耗电量/供电量）、bandwidth（带宽）字段：源数据里
-//   这两项全部是占位 0，不是真实游戏数值，等后续补充真实数据后再追加。
+//   源数据里所有设备的 size 都是 [3, 3]，但有部分设备的端口 grid 坐标已经超出了
+//   3x3 范围（对应 footprintNote 有值的那些），说明 size 是抓取脚本的占位默认值、
+//   不是真实值，这些设备的 footprint 先留 null 待核实，不做任何推算。
+// - isLowProfile：原样保留，目前仅「仓库存货口」「仓库取货口」为 true，用于区分
+//   矮桩体设备。
+// - ports：直接贴近源数据的端口坐标信息，不收窄成某侧几个口这种有损的聚合形式。
+//   type 取值 item_input/item_output/fluid_input/fluid_output（item = 本项目的
+//   传送带口 belt，fluid = 本项目的管道口 pipe）；dir 是 up/down/left/right，
+//   表示端口朝外的朝向——本项目 DIR_N/E/S/W（见 constants.js）是「到达这一格时
+//   的移动方向」，语义不同，不能直接划等号，后续真正接入 getDevicePorts() 时需要
+//   专门写一层映射，本次先原样保留源数据坐标系。
+// - 本次没有写入 power（耗电量/供电量）、bandwidth（带宽）字段：源数据里这两项
+//   全部是占位 0，不是真实游戏数值，等后续补充真实数据后再追加。
+// - 「反应池」「扩增反应池」（合成制造）是纯占位条目（footprint/ports 均为空），
+//   用户确认这两个设备存在但具体数据还在整理，先占位保留名字，后续单独补充。
 export const FACILITIES = {
   '基础生产': [
     {
-      id: 'dev_给水器',
-      name: '给水器',
+      id: 'dev_配件机',
+      name: '配件机',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       isLowProfile: false,
       ports: [
-        { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
-      ],
-    },
-    {
-      id: 'dev_洒水机',
-      name: '洒水机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
+        { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
+        { id: 'belt_in_1_2', type: 'item_input', grid: [1, 2], dir: 'down' },
+        { id: 'belt_in_2_2', type: 'item_input', grid: [2, 2], dir: 'down' },
+        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
+        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
+        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
       ],
     },
     {
@@ -127,102 +122,6 @@ export const FACILITIES = {
       ],
     },
     {
-      id: 'dev_气体收集泵',
-      name: '气体收集泵',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_out_2_1', type: 'fluid_output', grid: [2, 1], dir: 'right' },
-      ],
-    },
-    {
-      id: 'dev_便携源石矿机',
-      name: '便携源石矿机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
-      ],
-    },
-    {
-      id: 'dev_电驱矿机',
-      name: '电驱矿机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
-      ],
-    },
-    {
-      id: 'dev_二型电驱矿机',
-      name: '二型电驱矿机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
-      ],
-    },
-    {
-      id: 'dev_水驱矿机',
-      name: '水驱矿机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
-        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
-      ],
-    },
-    {
-      id: 'dev_水泵',
-      name: '水泵',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_out_2_1', type: 'fluid_output', grid: [2, 1], dir: 'right' },
-      ],
-    },
-    {
-      id: 'dev_二型耐酸水泵',
-      name: '二型耐酸水泵',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_out_2_1', type: 'fluid_output', grid: [2, 1], dir: 'right' },
-      ],
-    },
-  ],
-  '合成制造': [
-    {
-      id: 'dev_配件机',
-      name: '配件机',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
-        { id: 'belt_in_1_2', type: 'item_input', grid: [1, 2], dir: 'down' },
-        { id: 'belt_in_2_2', type: 'item_input', grid: [2, 2], dir: 'down' },
-        { id: 'belt_out_0_0', type: 'item_output', grid: [0, 0], dir: 'up' },
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-        { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
-      ],
-    },
-    {
       id: 'dev_塑形机',
       name: '塑形机',
       footprint: { w: 3, h: 3 },
@@ -238,6 +137,8 @@ export const FACILITIES = {
         { id: 'belt_out_2_0', type: 'item_output', grid: [2, 0], dir: 'up' },
       ],
     },
+  ],
+  '合成制造': [
     {
       id: 'dev_拆解机',
       name: '拆解机',
@@ -439,16 +340,24 @@ export const FACILITIES = {
         { id: 'belt_out_4_0', type: 'item_output', grid: [4, 0], dir: 'up' },
       ],
     },
-  ],
-  '电力': [
     {
-      id: 'dev_供电终端',
-      name: '供电终端',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
+      id: 'dev_反应池',
+      name: '反应池',
+      footprint: null,
+      footprintNote: '占位条目，等待补充实际数据',
       isLowProfile: false,
       ports: [],
     },
+    {
+      id: 'dev_扩增反应池',
+      name: '扩增反应池',
+      footprint: null,
+      footprintNote: '占位条目，等待补充实际数据',
+      isLowProfile: false,
+      ports: [],
+    },
+  ],
+  '电力': [
     {
       id: 'dev_供电桩',
       name: '供电桩',
@@ -494,14 +403,6 @@ export const FACILITIES = {
     },
   ],
   '仓储存取': [
-    {
-      id: 'dev_便捷存取站',
-      name: '便捷存取站',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [],
-    },
     {
       id: 'dev_储气罐',
       name: '储气罐',
@@ -615,26 +516,6 @@ export const FACILITIES = {
       isLowProfile: true,
       ports: [
         { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
-      ],
-    },
-    {
-      id: 'dev_污水接入口',
-      name: '污水接入口',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
-      ],
-    },
-    {
-      id: 'dev_产物排出口',
-      name: '产物排出口',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: false,
-      ports: [
-        { id: 'pipe_out_0_1', type: 'fluid_output', grid: [0, 1], dir: 'left' },
       ],
     },
   ],
