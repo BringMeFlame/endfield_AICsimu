@@ -83,8 +83,11 @@ const PIPE_UI = {
   setSelected: id => { state.selectedId = null; state.selectedPipeConnectionId = id; },
 };
 
-// 把 ui 对应模式的"起点"状态解析为寻路用的具体 (col,row,dir)。kind='anyOutput'
-// 时，在该设备当前空闲的输出口中，按到 (towardCol,towardRow) 代价最小挑选。
+// 把 ui 对应模式的"起点"状态解析为寻路用的具体 (col,row,dir)，绑定了设备端口
+// 时顺带带上端口自身的精确世界坐标 (x,y)(自由网格起点没有端口，不带这两个字段)。
+// kind='anyOutput' 时，在该设备当前空闲的输出口中，按到 (towardCol,towardRow)
+// 代价最小挑选。x/y 只有 updateFreePreview 会用到，用来让预览虚线紧贴端口本身
+// 而不是端口外侧那一格的格心(两者之间差半格，见 updateFreePreview 的注释)。
 function resolveFreeStartForPathing(ui, towardCol, towardRow, blocked, occupancy) {
   const start = ui.getStart();
   if (!start) return null;
@@ -94,11 +97,11 @@ function resolveFreeStartForPathing(ui, towardCol, towardRow, blocked, occupancy
   const pos = effectiveGridPos(dev);
   if (start.kind === 'port') {
     const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === start.port);
-    return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir } : null;
+    return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir, x: p.x, y: p.y } : null;
   }
   const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(dev.id, p.index));
   const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, occupancy);
-  return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir } : null;
+  return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir, x: best.x, y: best.y } : null;
 }
 
 // 起点(A)点击优先级：
@@ -208,17 +211,27 @@ function resolveFreeEndClick(ui, clientX, clientY) {
 // 鼠标每次移动都重算一次"起点 A → 当前悬停格"的 A* 预览路径(终点方向不限，
 // 仅供预览；真正落地时才会按终点自身的方向要求精确寻路)。同时更新设备本体
 // 悬停高亮：只在鼠标没有精确落在某个端口上、但落在设备本体上时高亮。
+// 预览虚线紧贴端口的处理：A* 的格子路径天然只能精确到"端口外侧那一格的格心"，
+// 而端口图形实际画在设备边界线上，两者之间总差半格——最终落地的连线不会有这个
+// 问题，是因为 computePath 会显式把 startPort/endPort 的精确坐标拼进 points
+// 数组首尾(见 pathfinding.js)。预览这里镜像同样的处理：起点绑定了设备端口时，
+// 把 startResolved.x/y(端口精确坐标)当成 points 数组的第一个点；悬停处精确落在
+// 某个未占用的输入口上时，同样把该端口的精确坐标追加为最后一个点——不这样处理
+// 的话，虚线预览会在半格之外就停下，和端口图形之间露出一截空隙，视觉上像是没
+// 连上。
 function updateFreePreview(ui, hoverClientX, hoverClientY) {
   ui.setPreviewPts(null);
   const worldPos = screenToWorld(hoverClientX, hoverClientY);
-  if (!findPortAt(hoverClientX, hoverClientY, 'output', ui.portKind) && !findPortAt(hoverClientX, hoverClientY, 'input', ui.portKind)) {
+  const hoverInPortRaw = findPortAt(hoverClientX, hoverClientY, 'input', ui.portKind);
+  const hoverInPort = hoverInPortRaw && !ui.isInputPortUsed(hoverInPortRaw.deviceId, hoverInPortRaw.index) ? hoverInPortRaw : null;
+  if (!findPortAt(hoverClientX, hoverClientY, 'output', ui.portKind) && !hoverInPortRaw) {
     const hovered = hitTestDevice(worldPos.x, worldPos.y);
     ui.setHoverDeviceId(hovered ? hovered.id : null);
   } else {
     ui.setHoverDeviceId(null);
   }
   if (!ui.getStart()) return;
-  const hoverCell = worldToCell(worldPos.x, worldPos.y);
+  const hoverCell = hoverInPort ? { col: hoverInPort.cellCol, row: hoverInPort.cellRow } : worldToCell(worldPos.x, worldPos.y);
   const blocked = buildBlockedSet();
   const occupancy = ui.network.buildOccupancy(null);
 
@@ -228,7 +241,10 @@ function updateFreePreview(ui, hoverClientX, hoverClientY) {
   const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, occupancy);
   if (!cellPath) return;
   const cleaned = removeSelfOverlap(cellPath);
-  ui.setPreviewPts(cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE })));
+  const pts = cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE }));
+  if (startResolved.x !== undefined) pts.unshift({ x: startResolved.x, y: startResolved.y });
+  if (hoverInPort) pts.push({ x: hoverInPort.x, y: hoverInPort.y });
+  ui.setPreviewPts(pts);
 }
 
 // 第二次点击落地：解析终点(落在既有连线上时先插入汇流器节点)，再解析起点

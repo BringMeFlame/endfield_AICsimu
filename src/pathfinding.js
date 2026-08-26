@@ -1,5 +1,5 @@
 // ---- 正交 A* 寻路(带转弯惩罚)、连线路径计算与命中测试 ----
-import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, WAYPOINT_HIT_RADIUS, BELT_WIDTH, PIPE_MERGER_COLOR, PIPE_SPLITTER_COLOR } from './constants.js';
+import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY, WAYPOINT_HIT_RADIUS, BELT_WIDTH } from './constants.js';
 import { state } from './state.js';
 import { effectiveGridPos, getDevicePorts, oppositeDir } from './devices.js';
 import { worldToScreen } from './coords.js';
@@ -514,7 +514,8 @@ export function findConnectionAtCell(col, row, network = BELT_NETWORK) {
 // mainInEdge=oppositeDir(entryDir)、mainOutEdge=exitDir 两条边(原流向保持不变)，
 // 其余边留给新的合流/分流分支使用(汇流器多出 2 个空闲输入边，分流器多出 2 个
 // 空闲输出边，天然满足"3 进 1 出"/"1 进 3 出"的容量上限)。
-const NODE_COLOR = { merger: '#ffd54f', splitter: '#4fc3f7', 'pipe-merger': PIPE_MERGER_COLOR, 'pipe-splitter': PIPE_SPLITTER_COLOR };
+// 四种节点颜色统一走"设备一律白底黑边"(见 SPAWN_TEMPLATES/drawDeviceRect)，不再
+// 用颜色区分——靠 1x1 占地 + "汇"/"分"标签本身分辨，与粉碎机/反应池视觉统一。
 const NODE_LABEL = { merger: '汇', splitter: '分', 'pipe-merger': '汇', 'pipe-splitter': '分' };
 
 export function splitConnectionAtCell(hostConn, cell, entryDir, exitDir, kind, network = BELT_NETWORK) {
@@ -525,7 +526,7 @@ export function splitConnectionAtCell(hostConn, cell, entryDir, exitDir, kind, n
     kind,
     gridX: cell.col, gridY: cell.row, w: 1, h: 1,
     mainInEdge, mainOutEdge,
-    color: NODE_COLOR[kind],
+    color: '#ffffff',
     borderColor: '#111',
     label: NODE_LABEL[kind]
   };
@@ -592,7 +593,9 @@ function distPointToSegment(px, py, ax, ay, bx, by) {
 // 返回 { conn, segmentIndex }：segmentIndex 是命中的 conn.points[j]-conn.points[j+1] 线段下标，
 // 供手动拖拽新增途经点时判断插入顺序。
 export function hitTestConnection(clientX, clientY, network = BELT_NETWORK) {
-  const THRESH = BELT_WIDTH / 2 + 2;
+  // 命中容差跟着 state.scale 缩放，和渲染时 BELT_WIDTH*state.scale 的实际视觉
+  // 宽度保持一致(见 render.js 的 scaled())，否则放大地图后点击判定会明显偏窄。
+  const THRESH = (BELT_WIDTH / 2 + 2) * state.scale;
   const conns = network.getConns();
   for (let i = conns.length - 1; i >= 0; i--) {
     const c = conns[i];

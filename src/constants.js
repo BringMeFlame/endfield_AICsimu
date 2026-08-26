@@ -13,6 +13,9 @@ export const DIR_VECT = [{ dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }, 
 export const ALL_DIRS = [DIR_E, DIR_S, DIR_W, DIR_N];
 
 // ---- 传送带/管道渲染参数(极简风：半透明色带/线条 + 方向箭头，无辊轴/铰链细节) ----
+// 下面这些都是"世界像素"尺寸(缩放 1x 时的屏幕像素数)，实际绘制时统一乘以
+// state.scale(见 render.js 的 scaled() 辅助函数)，保证缩放地图时传送带/管道/
+// 箭头/端口这些尺寸跟着设备和网格一起等比例放大缩小，不会显得比例失调。
 export const BELT_WIDTH = Math.round(GRID_SIZE * 0.6); // 传送带整体宽度，约占一格宽度的60%
 export const PIPE_WIDTH = 8;                            // 管道线条宽度，明显细于传送带，便于两者重叠时透视
 // 折线转角的圆角半径，固定小像素值、不随 BELT_WIDTH/GRID_SIZE 缩放：如果直接用
@@ -20,7 +23,11 @@ export const PIPE_WIDTH = 8;                            // 管道线条宽度，
 // (带宽越宽转角越是一个大圆弧)，这里改成手动在折线拐点处插入小半径圆弧(见
 // render.js 的 buildRoundedScreenPath2D)，让转角始终"横平竖直"但不是绝对直角。
 export const BELT_CORNER_RADIUS = 6;
-export const FLOW_ARROW_STEP = 30;                      // 方向箭头沿路径的间距(屏幕像素)
+export const FLOW_ARROW_STEP = 46;                      // 方向箭头沿路径的间距，比之前更稀疏一些
+// 传送带描边：在带体外侧再叠一圈半透明淡灰色描边，呼应终末地游戏本体的工业风
+// (钢板边缘感)，只用于传送带，不用于管道(管道保持细线条，靠这个区别两者)。
+export const BELT_EDGE_WIDTH = 4;   // 描边比带体每侧多出的宽度
+export const BELT_EDGE_COLOR = 'rgba(120, 120, 120, 0.45)';
 
 // ---- 撤销历史 ----
 export const HISTORY_LIMIT = 30;
@@ -37,25 +44,26 @@ export const REACTOR_PORT_LAYOUT = { count: 2, spacing: 2 };
 // 左=管道入，右=管道出；旋转时四组端口作为刚体一起转动，见 devices.js 的 reactorEdgeFor。
 export const REACTOR_BASE_ROLES = { beltIn: DIR_N, beltOut: DIR_S, pipeIn: DIR_W, pipeOut: DIR_E };
 
-// ---- 传送带调色板：半透明浅黄色条带，选中态更饱和/更不透明，失效态复用红色警示语义 ----
-export const BELT_COLOR = 'rgba(255, 224, 130, 0.45)';
-export const BELT_COLOR_SELECTED = 'rgba(255, 202, 40, 0.75)';
+// ---- 传送带调色板：白色基调地图上的半透明琥珀色条带，选中态更饱和/更不透明，
+// 失效态复用红色警示语义 ----
+export const BELT_COLOR = 'rgba(255, 179, 0, 0.5)';
+export const BELT_COLOR_SELECTED = 'rgba(255, 143, 0, 0.85)';
 
-// ---- 管道调色板：半透明蓝灰色线条(经用户确认批准，与传送带的浅黄区分开)，
+// ---- 管道调色板：半透明蓝灰色线条(经用户确认批准，与传送带的琥珀色区分开)，
 // 选中态换成更醒目的蓝色；不要拿这里的颜色去渲染传送带，也不要拿传送带的
 // 颜色去渲染管道。----
-export const PIPE_COLOR = 'rgba(120, 144, 156, 0.6)';
-export const PIPE_COLOR_SELECTED = 'rgba(41, 182, 246, 0.9)';
+export const PIPE_COLOR = 'rgba(96, 125, 139, 0.65)';
+export const PIPE_COLOR_SELECTED = 'rgba(2, 136, 209, 0.9)';
 // Q 模式(管道自由绘制)的强调色：沿用管道自身蓝色系而非传送带模式的绿色，
 // 因为这是与传送带并列的独立工具，复用绿色会让用户分不清当前处于哪个模式。
-export const PIPE_ACCENT = 'rgba(41, 182, 246, 0.85)';
-// 管道分流器/汇流器节点颜色：现有传送带汇流器 #ffd54f(黄)/分流器 #4fc3f7(蓝)，
-// 这两个新颜色刻意避开，保证四种 1x1 节点一眼可辨。
-export const PIPE_MERGER_COLOR = '#ab47bc';
-export const PIPE_SPLITTER_COLOR = '#ff7043';
+export const PIPE_ACCENT = 'rgba(2, 136, 209, 0.85)';
+// 汇流器/分流器(传送带版和管道版)统一走"设备统一白底黑边"的规则(见
+// pathfinding.js 的 NODE_COLOR)，不再用颜色区分四种节点，靠 1x1 占地 + "汇"/"分"
+// 标签本身分辨。
 
 // ---- 端口颜色：只按"传送带口/管道口"这一个维度区分，不再用输入/输出/已连接
 // 三种色相——已连接状态改用不透明度表达(未连接半透明、已连接不透明)，颜色
-// 本身对同一类端口保持统一，方便一眼分辨端口能不能接管道。----
-export const BELT_PORT_COLOR = '#ffffff';
-export const PIPE_PORT_COLOR = '#81d4fa';
+// 本身对同一类端口保持统一，方便一眼分辨端口能不能接管道。白色基调地图下端口
+// 颜色需要足够深，才能在白底设备上保持可见。----
+export const BELT_PORT_COLOR = '#1a1a1a';
+export const PIPE_PORT_COLOR = '#0288d1';

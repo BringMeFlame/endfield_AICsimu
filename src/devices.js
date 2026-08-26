@@ -6,9 +6,11 @@ import { worldToScreen } from './coords.js';
 // ---- 工具栏拖拽生成新设备的模板注册表 ----
 // key 对应工具栏图标/state.spawningTemplateKey；kind: undefined 的粉碎机和历史
 // 行为完全一致(devices 里 kind 字段本来就允许缺省，JSON 克隆也会一样丢弃 undefined)。
+// 所有设备统一白底黑边(工业风)，不再用颜色区分设备种类，靠标签文字 + 占地
+// 大小分辨(见 render.js drawDeviceRect 的字体规则)。
 export const SPAWN_TEMPLATES = [
   { key: 'crusher', kind: undefined, w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' },
-  { key: 'reactor', kind: 'reactor', w: 5, h: 5, color: '#455a64', borderColor: '#111111', label: '反应池' },
+  { key: 'reactor', kind: 'reactor', w: 5, h: 5, color: '#ffffff', borderColor: '#111111', label: '反应池' },
 ];
 
 export function getDeviceRectWorld(gridX, gridY, w, h) {
