@@ -59,59 +59,14 @@ function drawGrid() {
   ctx.stroke();
 }
 
-// 沿矩形内部画一组 45° 斜纹(裁剪到矩形范围内)，用作选中态的底纹。
-function drawDiagonalHatch(x, y, w, h, spacing, color, lineWidth) {
+// 选中态：设备内部叠一层极淡的黄色底色，替代早期深色地图时代黄色虚线扩边框的
+// 方案(那个方案在白色基调下对比度不够)。不用斜纹/边缘标记这类更强的纹理，纯
+// 色块更安静、不干扰阅读设备本身的标签和端口。
+const SELECTION_TINT_COLOR = 'rgba(255, 235, 59, 0.14)';
+function drawSelectionMarks(topLeft, sw, sh) {
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(x, y, w, h);
-  ctx.clip();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = lineWidth;
-  ctx.beginPath();
-  for (let d = -h; d < w + h; d += spacing) {
-    ctx.moveTo(x + d, y);
-    ctx.lineTo(x + d + h, y + h);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
-// 一个小 "v"/"^" chevron 标记(只描边)，和端口箭头(drawPortMarker)同一套视觉语言。
-function drawChevronAt(cx, cy, s, pointDown) {
-  ctx.beginPath();
-  if (pointDown) {
-    ctx.moveTo(cx - s, cy - s);
-    ctx.lineTo(cx, cy);
-    ctx.lineTo(cx + s, cy - s);
-  } else {
-    ctx.moveTo(cx - s, cy + s);
-    ctx.lineTo(cx, cy);
-    ctx.lineTo(cx + s, cy + s);
-  }
-  ctx.stroke();
-}
-
-// 选中态：设备内部叠一层半透明深色斜纹，顶/底边每格对齐一个 chevron 标记(顶边
-// 朝下指向设备本体、底边朝上)，参考终末地选中态的"斜纹+边缘标记"风格，替代早期
-// 深色地图时代黄色虚线扩边框的方案(那个方案在白色基调下对比度不够，见调用方注释)。
-function drawSelectionMarks(topLeft, sw, sh, dev) {
-  drawDiagonalHatch(topLeft.x, topLeft.y, sw, sh, scaled(10), 'rgba(17, 17, 17, 0.16)', scaled(2));
-
-  const markSize = scaled(6);
-  // gap 要足够大，避免和反应池这类顶/底边本来就有端口箭头(drawPortMarker，
-  // 朝外伸出到边界外约 5px)的设备发生视觉重叠糊成一团"X"——两者都在同一条边上，
-  // 隔开的距离必须大于端口箭头自身伸出的量。
-  const gap = scaled(12);
-  ctx.save();
-  ctx.strokeStyle = '#111';
-  ctx.lineWidth = scaled(2.2);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (let i = 0; i < dev.w; i++) {
-    const cx = topLeft.x + (i + 0.5) * (sw / dev.w);
-    drawChevronAt(cx, topLeft.y - gap, markSize, true);
-    drawChevronAt(cx, topLeft.y + sh + gap, markSize, false);
-  }
+  ctx.fillStyle = SELECTION_TINT_COLOR;
+  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
   ctx.restore();
 }
 
@@ -139,11 +94,9 @@ function drawDeviceRect(rect, dev, opts) {
   }
 
   // 选中高亮：不再用黄色虚线扩边框(那是深色地图时代的配色，白色基调下对比度不
-  // 够)，改成设备内部叠一层深色斜纹(呼应"施工/选中"标记的通用语义) + 沿顶/底
-  // 边每格一个的小 chevron 标记(和端口箭头同一套视觉语言)，靠黑色本身的高对
-  // 比度在白底上足够醒目，不需要额外的高饱和色。
+  // 够)，也不叠斜纹/边缘标记(视觉上太抢)，改成设备内部一层极淡的黄色底色。
   if (opts.selected) {
-    drawSelectionMarks(topLeft, sw, sh, dev);
+    drawSelectionMarks(topLeft, sw, sh);
   }
 
   // 自由传送带模式下悬停在设备本体(非精确端口)上：高亮提示"点击即可自动接入最近端口"
