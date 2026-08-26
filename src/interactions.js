@@ -1041,23 +1041,38 @@ function bindKeyboardEvents() {
     if (e.key === 'r' || e.key === 'R') {
       if (state.selectedId === null) return;
       const dev = state.devices.find(d => d.id === state.selectedId);
-      // 汇流器/分流器(传送带版和管道版)的朝向由被切入的原连线决定，不支持手动旋转；
-      // 真实基建设备(facility)允许旋转，端口作为刚体整体随旋转角度转动。
-      if (!dev || (dev.kind && dev.kind !== 'facility')) return;
+      const isNode = dev && (dev.kind === 'merger' || dev.kind === 'splitter' || dev.kind === 'pipe-merger' || dev.kind === 'pipe-splitter');
+      if (!dev || !(dev.kind === 'facility' || isNode)) return;
       e.preventDefault();
       pushHistory();
       const beforeSnapshot = state.history[state.history.length - 1];
-      dev.rot = (flowDirOf(dev) + 1) % 4;
-      // facility 设备大多不是正方形(拆解机6x4、协议核心9x9等)，旋转是真的绕
-      // 中心转外形，宽高会互换；正方形设备(如粉碎机)互换后数值不变，这里不用
-      // 分情况处理。
-      const tmp = dev.w;
-      dev.w = dev.h;
-      dev.h = tmp;
+      if (isNode) {
+        // 汇流器/分流器(含管道版)是 1x1 节点，没有 facility 那套 rot+w/h 互换机制，
+        // nodeDevicePorts 直接读 mainOutEdge/mainInEdge 这一条边——旋转就是把这条
+        // 边顺时针转 90°，其余 3 条边(输入/输出角色)跟着自动挪到下一条边。由
+        // splitConnectionAtCell 切入已有连线生成的节点，这两个字段是延续被切入
+        // 连线的走向定出来的，旋转会改变它已经接好的那 1 进/1 出的位置，因此和
+        // facility 旋转一样必须过下面同一套"顺手压坏别的合法连线"安全网检查——
+        // 唯一区别是节点旋转不用像 facility 那样互换 w/h(1x1 恒等)。
+        if (dev.kind === 'merger' || dev.kind === 'pipe-merger') {
+          dev.mainOutEdge = (dev.mainOutEdge + 1) % 4;
+        } else {
+          dev.mainInEdge = (dev.mainInEdge + 1) % 4;
+        }
+      } else {
+        dev.rot = (flowDirOf(dev) + 1) % 4;
+        // facility 设备大多不是正方形(拆解机6x4、协议核心9x9等)，旋转是真的绕
+        // 中心转外形，宽高会互换；正方形设备(如粉碎机)互换后数值不变，这里不用
+        // 分情况处理。
+        const tmp = dev.w;
+        dev.w = dev.h;
+        dev.h = tmp;
+      }
       recomputeAllFlows();
-      // 旋转会改变非正方形 facility 设备实际占用的格子，理论上可能像"设备拖拽/
-      // 生成新设备"一样顺手压中另一条操作前合法的连线，按 CLAUDE.md 的规矩这里
-      // 也要做同样的安全网检查，坏了就整体撤销这次旋转。
+      // 旋转可能改变非正方形 facility 设备实际占用的格子，也可能挪动节点已经
+      // 接好的那 1 进/1 出端口位置，理论上都可能像"设备拖拽/生成新设备"一样
+      // 顺手压中另一条操作前合法的连线，按 CLAUDE.md 的规矩这里统一做同样的
+      // 安全网检查，坏了就整体撤销这次旋转。
       const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
       const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
       if (brokeBelt || brokePipe) {
@@ -1239,13 +1254,23 @@ function bindToolbarSpawnEvents() {
         kind: template.kind,
         color: template.color,
         borderColor: template.borderColor,
-        label: template.label,
+        // 汇流器/分流器(含管道版)工具栏图标显示全称(template.label)方便识别，
+        // 但落到画布上的节点标签沿用 splitConnectionAtCell 那一路"汇"/"分"短标签
+        // (template.deviceLabel，见 devices.js 的 NODE_TEMPLATES)，facility 设备
+        // 没有这个字段，直接退回 template.label(本来就是同一个全称)。
+        label: template.deviceLabel || template.label,
         // facility 设备专属：facilityId 标记它是 facilities.js 里哪个设备种类
         // (和 dev.id 这个"实例编号"是两回事)；ports 是该种类的原始端口数据，
         // 落地时整体拷贝一份到实例上，供 getDevicePorts() 的 facilityDevicePorts
         // 分支使用，不用在渲染/寻路时反过来查 FACILITIES——这样 cloneCanvasState()
         // 的无差别深拷贝天然就能把它带过 Ctrl+Z 撤销栈，不用额外处理。
-        ...(template.kind === 'facility' ? { facilityId: template.key, ports: template.ports } : {})
+        ...(template.kind === 'facility' ? { facilityId: template.key, ports: template.ports } : {}),
+        // 汇流器/分流器(含管道版)专属：mainOutEdge/mainInEdge 决定哪条边固定是
+        // 出口/入口，其余边留给用户在自由传送带/管道模式里逐条连接(见
+        // nodeDevicePorts)。空节点落地时从模板拷贝默认朝向，用户可以之后按 R
+        // 键旋转调整(与 facility 共用同一套 R 键处理，见下方 keydown 里的分支)。
+        ...(template.mainOutEdge !== undefined ? { mainOutEdge: template.mainOutEdge } : {}),
+        ...(template.mainInEdge !== undefined ? { mainInEdge: template.mainInEdge } : {})
       };
       state.devices.push(newDevice);
       state.selectedId = newDevice.id;

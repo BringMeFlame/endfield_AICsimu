@@ -4,6 +4,11 @@ import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
 
+// 1x1 节点(汇流器/分流器)在画布上显示的短标签，靠这个 + 占地大小(而不是颜色)
+// 分辨节点种类；splitConnectionAtCell(切入已有连线生成节点)和下面 NODE_TEMPLATES
+// (工具栏直接生成空节点)共用同一份，避免出现两份手抄的标签文案。
+export const NODE_LABEL = { merger: '汇', splitter: '分', 'pipe-merger': '汇', 'pipe-splitter': '分' };
+
 // ---- 工具栏拖拽生成新设备的模板注册表 ----
 // key 对应工具栏图标/state.spawningTemplateKey。所有设备统一白底黑边(工业风)，
 // 不再用颜色区分设备种类，靠标签文字 + 占地大小分辨(见 render.js drawDeviceRect
@@ -13,7 +18,7 @@ import { FACILITIES } from './data/facilities.js';
 // 换成工具栏/渲染需要的 w/h/color/kind 等字段，真实数值自始至终只在
 // facilities.js 里维护一份，这里不允许出现第二份手抄的设备数值表。
 // category 是 facilities.js 的中文分类名，工具栏据此把图标分到对应标签页。
-export const SPAWN_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list]) =>
+const FACILITY_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list]) =>
   list.map(f => ({
     key: f.id,
     kind: 'facility',
@@ -26,6 +31,40 @@ export const SPAWN_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, li
     ports: f.ports
   }))
 );
+
+// ---- 分流器/汇流器(传送带版 + 管道版)：不属于 FACILITIES(那是从 wiki 抓取、
+// 逐条核对过的真实游戏建筑数据，见 facilities.js 顶部注释)，是本模拟器自身的
+// 逻辑节点，独立追加进 SPAWN_TEMPLATES。之前这四种节点只能靠 Alt+点击已有连线
+// "切入"生成(splitConnectionAtCell)，天生带着 1 进 1 出(延续被切入连线的走向)，
+// 没法凭空放一个空节点直接对接任意设备端口——但游戏里分流器/汇流器本身就是可以
+// 单独放置的建筑，因此这里把它们也做成可拖拽生成的空节点模板：4 条边都还没接线，
+// 落地后和 splitConnectionAtCell 生成的同类节点完全同构(1x1、mainInEdge/
+// mainOutEdge 决定各边是入口还是出口，见下面 nodeDevicePorts)，直接在自由传送带/
+// 管道模式里从任意设备端口拉线过来即可，不再要求先有一条现成的连线可切。
+// 默认朝向 mainOutEdge=DIR_S(汇流器)/mainInEdge=DIR_N(分流器)，即"主线自上而下"，
+// 和真实基建设备一样可以用 R 键旋转调整(见 interactions.js 的 R 键处理)。
+// label 是节点落地到画布上显示的短标签(见上面 NODE_LABEL)；工具栏图标本身显示
+// 更易识别的全称(toolbarLabel)，避免"汇"/"分"在传送带版和管道版之间无法区分。
+const NODE_TEMPLATES = [
+  { key: 'node_merger', kind: 'merger', toolbarLabel: '汇流器', mainOutEdge: DIR_S },
+  { key: 'node_splitter', kind: 'splitter', toolbarLabel: '分流器', mainInEdge: DIR_N },
+  { key: 'node_pipe_merger', kind: 'pipe-merger', toolbarLabel: '管道汇流器', mainOutEdge: DIR_S },
+  { key: 'node_pipe_splitter', kind: 'pipe-splitter', toolbarLabel: '管道分流器', mainInEdge: DIR_N },
+].map(t => ({
+  key: t.key,
+  kind: t.kind,
+  category: '分流汇流',
+  w: 1,
+  h: 1,
+  color: '#ffffff',
+  borderColor: '#111111',
+  label: t.toolbarLabel,
+  deviceLabel: NODE_LABEL[t.kind],
+  ...(t.mainOutEdge !== undefined ? { mainOutEdge: t.mainOutEdge } : {}),
+  ...(t.mainInEdge !== undefined ? { mainInEdge: t.mainInEdge } : {})
+}));
+
+export const SPAWN_TEMPLATES = FACILITY_TEMPLATES.concat(NODE_TEMPLATES);
 
 export function getDeviceRectWorld(gridX, gridY, w, h) {
   return { x: gridX * GRID_SIZE, y: gridY * GRID_SIZE, w: w * GRID_SIZE, h: h * GRID_SIZE };
