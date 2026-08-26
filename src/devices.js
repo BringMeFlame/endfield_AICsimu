@@ -157,12 +157,17 @@ function rotateFacilityPort(col, row, dir, baseW, baseH, rot) {
 
 // 显式端口坐标转世界坐标，公式和 singleCellPort 完全一致(格子中心沿朝外方向
 // 推半格到边界)，只是格子坐标是数据里显式给的具体 (col,row)，不是设备中心；
-// cellCol/cellRow 同理是"沿 dir 方向再往外一格"，即紧贴该端口、位于设备外侧
+// cellCol/cellRow 同理是"沿 edge 方向再往外一格"，即紧贴该端口、位于设备外侧
 // 的网格单元，作为寻路的起止格。
-function facilityCellPort(pos, col, row, dir, index, portKind) {
+// edge(端口朝外的边)和 dir(寻路/箭头方向)是两个不同的量，和 singleCellPort 的
+// edge/dir 两参数同一个道理：位置摆放永远沿 edge(朝外)半格；但 dir 对输出口
+// 等于 edge(物料沿朝外方向离开设备)，对输入口必须是 oppositeDir(edge)(物料
+// 沿朝内方向进入设备)——调用方(facilityDevicePorts)已经按 io 算好这个区分，
+// 这里只管照单接收，不重新推导。
+function facilityCellPort(pos, col, row, edge, dir, index, portKind) {
   const cx = (pos.gridX + col + 0.5) * GRID_SIZE;
   const cy = (pos.gridY + row + 0.5) * GRID_SIZE;
-  const vec = DIR_VECT[dir];
+  const vec = DIR_VECT[edge];
   return {
     index,
     x: cx + vec.dx * (GRID_SIZE / 2),
@@ -191,7 +196,10 @@ function facilityDevicePorts(dev, pos) {
     const baseDir = FACILITY_DIR_TO_DIR[p.dir];
     const rotated = rotateFacilityPort(p.grid[0], p.grid[1], baseDir, baseW, baseH, rot);
     const list = io === 'input' ? inputs : outputs;
-    list.push(facilityCellPort(pos, rotated.col, rotated.row, rotated.dir, list.length, portKind));
+    // 输出口沿朝外方向(edge)离开设备；输入口沿朝内方向(oppositeDir(edge))
+    // 进入设备——和 nodeDevicePorts/singleCellPort 里汇流器/分流器的规则一致。
+    const flowDir = io === 'input' ? oppositeDir(rotated.dir) : rotated.dir;
+    list.push(facilityCellPort(pos, rotated.col, rotated.row, rotated.dir, flowDir, list.length, portKind));
   }
   return { inputs, outputs };
 }
