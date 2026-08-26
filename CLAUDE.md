@@ -21,7 +21,7 @@
   - `src/pathfinding.js` —— `aStarOrthogonal`、`removeSelfOverlap`、`buildBeltOccupancy`、`computePath`、`splitConnectionAtCell`、连线/途经点命中测试等。
   - `src/render.js` —— 所有 `drawXxx` 函数 + `draw()`。
   - `src/history.js` —— `cloneCanvasState`/`pushHistory`/`undo`/`revertLastHistoryStep`/`brokeExistingValidConnection`。
-  - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeBeltStartClick` 等）、工具栏拖拽生成新设备。
+  - `src/interactions.js` —— 鼠标/键盘事件绑定、自由传送带模式状态机（`resolveFreeStartClick` 等，传送带/管道共用同一份实现）、工具栏拖拽生成新设备。
   - `src/main.js` —— 入口：`resize()`、`initView()`、`initInteractions()`、首次 `draw()`。
 - 依赖安装与本地预览：
   ```bash
@@ -37,7 +37,7 @@
 代码已按功能拆分到 `src/*.js` 的 ES Module 里（见上方"文件结构"），不再是单个 IIFE；但模块拆分只是把原来 IIFE 闭包内的分区物理搬到了对应文件，**行为和下面这些约定完全没变**，新增代码前先确认该放进哪个模块（对照上面"文件结构"的职责划分，不要把新函数塞进无关模块）：
 
 ### 命名规范
-- **函数/变量**：`camelCase`，动词开头描述行为，例如 `hitTestDevice`、`buildBlockedSet`、`resolveFreeBeltStartClick`、`pickNearestPortByDistance`。名字要能看出"做什么"，不要用 `a`/`tmp` 这类占位名（循环内部短生命周期变量除外，如 `a`, `b` 表示线段两端点）。
+- **函数/变量**：`camelCase`，动词开头描述行为，例如 `hitTestDevice`、`buildBlockedSet`、`resolveFreeStartClick`、`pickNearestPortByDistance`。名字要能看出"做什么"，不要用 `a`/`tmp` 这类占位名（循环内部短生命周期变量除外，如 `a`, `b` 表示线段两端点）。
 - **常量**：`UPPER_SNAKE_CASE`，写在文件靠前位置或就近声明，例如 `GRID_SIZE`、`PORT_COUNT`、`TURN_PENALTY`、`DIR_E/DIR_S/DIR_W/DIR_N`、`BELT_WIDTH`、`HISTORY_LIMIT`、`HINT_NORMAL`/`HINT_BELT`。
 - **方向常量**：固定用 `DIR_E=0, DIR_S=1, DIR_W=2, DIR_N=3`（顺时针编号，和屏幕旋转角度 `dir * Math.PI / 2` 对应），配套 `DIR_VECT` 位移表、`oppositeDir()`、`orientationOf()`（转 'H'/'V'）。新增方向相关逻辑必须复用这一套常量，不要另起编号体系。
 - **坐标系术语**：严格区分三套坐标，命名上带前缀区分：
