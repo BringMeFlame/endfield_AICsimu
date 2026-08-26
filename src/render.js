@@ -122,6 +122,28 @@ function drawHatchedLabel(text, font, cx, cy) {
   ctx.drawImage(off, cx - w / 2, cy - h / 2);
 }
 
+// 标签自动换行：设备名称带上模式后缀(如"（气液）")后，在占地较小的设备上
+// 单行会画出矩形边界、甚至盖住端口箭头。中日韩文本没有空格可断词，这里按
+// 字符边界贪心换行——只要加上下一个字符会超宽就另起一行，直到用完整个
+// 标签字符串；不做超出设备高度后的截断处理，目前所有设备标签在现有占地
+// 下最多两三行都能放得下，真出现放不下的极端情况再按需补处理。
+function wrapLabelLines(text, font, maxWidth) {
+  ctx.font = font;
+  const lines = [];
+  let line = '';
+  for (const ch of text) {
+    const next = line + ch;
+    if (line && ctx.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = ch;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 function drawDeviceRect(rect, dev, opts) {
   const topLeft = worldToScreen(rect.x, rect.y);
   const sw = rect.w * state.scale;
@@ -171,16 +193,21 @@ function drawDeviceRect(rect, dev, opts) {
   // 强调(drawHatchedLabel)，呼应设备本体的斜纹选中效果。
   if (sw > 24 && sh > 16) {
     ctx.globalAlpha = 1;
-    const font = `900 ${Math.max(10, Math.min(16, sh * 0.22))}px ${LABEL_FONT_FAMILY}`;
+    const fontSize = Math.max(10, Math.min(16, sh * 0.22));
+    const font = `900 ${fontSize}px ${LABEL_FONT_FAMILY}`;
     const cx = topLeft.x + sw / 2, cy = topLeft.y + sh / 2;
+    const maxWidth = Math.max(1, sw - scaled(8));
+    const lines = wrapLabelLines(dev.label, font, maxWidth);
+    const lineHeight = fontSize * 1.15;
+    const startY = cy - (lines.length - 1) * lineHeight / 2;
     if (opts.selected) {
-      drawHatchedLabel(dev.label, font, cx, cy);
+      lines.forEach((ln, i) => drawHatchedLabel(ln, font, cx, startY + i * lineHeight));
     } else {
       ctx.fillStyle = '#111';
       ctx.font = font;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(dev.label, cx, cy);
+      lines.forEach((ln, i) => ctx.fillText(ln, cx, startY + i * lineHeight));
     }
   }
 
