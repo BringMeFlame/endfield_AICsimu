@@ -10,9 +10,9 @@
 // - footprint：{ w, h } 网格格数，字段名对应 devices.js SPAWN_TEMPLATES 的 w/h；
 //   部分设备的端口 grid 坐标超出了 size 字段范围（对应 footprintNote 有值的那些），
 //   这些设备的 footprint 先留 null 待核实，不做任何推算。
-// - powerCost：耗电量/供电量，负数=耗电、正数=供电、0=不耗电（气体散布机等已由
-//   用户确认为真实值的 0，不是占位），字段名和单位原样沿用用户提供的数据，目前
-//   【基础生产】【合成制造】两个分类补齐了真实值，其余分类还没有这个字段（不是
+// - powerCost：耗电量/供电量，负数=耗电、正数=供电、0=不耗电（已由用户确认为真实
+//   值的 0，不是占位），字段名和单位原样沿用用户提供的数据，目前【基础生产】
+//   【合成制造】【仓储存取】三个分类补齐了真实值，其余分类还没有这个字段（不是
 //   0，是还没拿到数据，字段直接缺省而非填 0/null，避免和「真的是0」混淆）。
 // - bandwidth：带宽/吞吐，原样沿用用户提供的数据，缺省含义同上。
 // - isLowProfile：原样保留，目前仅「仓库存货口」「仓库取货口」为 true，用于区分
@@ -470,6 +470,8 @@ export const FACILITIES = {
       name: '储气罐',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -481,6 +483,8 @@ export const FACILITIES = {
       name: '储液罐',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -490,26 +494,44 @@ export const FACILITIES = {
     {
       id: 'dev_仓库存货口',
       name: '仓库存货口',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 3, h: 1 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: true,
       ports: [
         { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'up' },
       ],
     },
     {
+      id: 'dev_仓库取货口',
+      name: '仓库取货口',
+      footprint: { w: 3, h: 1 },
+      footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
+      isLowProfile: true,
+      ports: [
+        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
+      ],
+    },
+    {
       id: 'dev_仓库存取线基段',
       name: '仓库存取线基段',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 1, h: 1 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: true,
       ports: [],
     },
     {
       id: 'dev_仓库存取线源桩',
       name: '仓库存取线源桩',
-      footprint: { w: 3, h: 3 },
+      footprint: { w: 2, h: 2 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [],
     },
@@ -518,6 +540,8 @@ export const FACILITIES = {
       name: '协议储存箱',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: -5,
+      bandwidth: 2,
       isLowProfile: false,
       ports: [
         { id: 'belt_in_0_2', type: 'item_input', grid: [0, 2], dir: 'down' },
@@ -533,6 +557,8 @@ export const FACILITIES = {
       name: '暗管入口',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -541,8 +567,10 @@ export const FACILITIES = {
     {
       id: 'dev_多口暗管入口',
       name: '多口暗管入口',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 3, h: 5 },
+      footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -554,6 +582,8 @@ export const FACILITIES = {
       name: '暗管出口',
       footprint: { w: 3, h: 3 },
       footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [
         { id: 'pipe_out_2_1', type: 'fluid_output', grid: [2, 1], dir: 'right' },
@@ -562,22 +592,14 @@ export const FACILITIES = {
     {
       id: 'dev_多口暗管出口',
       name: '多口暗管出口',
-      footprint: null,
-      footprintNote: '端口坐标超出 size 字段范围，占地面积待核实',
+      footprint: { w: 3, h: 5 },
+      footprintNote: null,
+      powerCost: 0,
+      bandwidth: 1,
       isLowProfile: false,
       ports: [
         { id: 'pipe_out_2_1', type: 'fluid_output', grid: [2, 1], dir: 'right' },
         { id: 'pipe_out_2_3', type: 'fluid_output', grid: [2, 3], dir: 'right' },
-      ],
-    },
-    {
-      id: 'dev_仓库取货口',
-      name: '仓库取货口',
-      footprint: { w: 3, h: 3 },
-      footprintNote: null,
-      isLowProfile: true,
-      ports: [
-        { id: 'belt_out_1_0', type: 'item_output', grid: [1, 0], dir: 'up' },
       ],
     },
   ],
