@@ -253,18 +253,29 @@ function angleForDir(dir) {
 // 极简风端口指示器：一个指向物料流动方向的实心箭头——形状仍是原来那个扁扁的
 // "›"折线(尖端 s*0.6，两翼 ±s)，只是在两翼末端之间多补一条边把它闭合成三角形，
 // 内部填白(PORT_FILL_COLOR，呼应"设备白底彩边"的配色习惯，不发明新色相)，边框
-// 仍按端口类型区分——传送带口深色，管道口蓝色，方便一眼看出这个口能不能接管道；
-// 是否已连接不再单独换一种色相，而是用不透明度表达(未连接半透明、已连接不透明)。
+// 仍按端口类型区分——传送带口深色，管道口蓝色，方便一眼看出这个口能不能接管道。
+// 内部填充始终完全不透明(不能被半透明的斜纹选中态/网格线透出来，那样线条会
+// 显得很乱)；"是否已连接"改成只体现在边框描边的不透明度上(未连接半透明、
+// 已连接不透明)，不再对整个箭头(含填充)一起降低透明度。
 function drawPortMarker(p, connected, flowDir) {
   const screen = worldToScreen(p.x, p.y);
   const color = p.portKind === 'pipe' ? PIPE_PORT_COLOR : BELT_PORT_COLOR;
   const s = scaled(8);
 
   ctx.save();
-  ctx.globalAlpha = connected ? 1 : 0.55;
   ctx.translate(screen.x, screen.y);
   ctx.rotate(angleForDir(flowDir));
+  ctx.beginPath();
+  ctx.moveTo(-s * 0.5, -s);
+  ctx.lineTo(s * 0.6, 0);
+  ctx.lineTo(-s * 0.5, s);
+  ctx.closePath();
+
+  ctx.globalAlpha = 1;
   ctx.fillStyle = PORT_FILL_COLOR;
+  ctx.fill();
+
+  ctx.globalAlpha = connected ? 1 : 0.55;
   ctx.strokeStyle = color;
   // 缩小地图时如果单纯乘 state.scale，线宽会跟着无限变细直到肉眼难辨——这里
   // 设一个不随缩放继续变薄的下限(2px)，保证缩得再小箭头依旧看得清；放大时仍然
@@ -272,12 +283,6 @@ function drawPortMarker(p, connected, flowDir) {
   ctx.lineWidth = Math.max(2, scaled(3.2));
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(-s * 0.5, -s);
-  ctx.lineTo(s * 0.6, 0);
-  ctx.lineTo(-s * 0.5, s);
-  ctx.closePath();
-  ctx.fill();
   ctx.stroke();
   ctx.restore();
 }
