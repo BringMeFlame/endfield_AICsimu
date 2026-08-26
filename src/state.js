@@ -21,8 +21,10 @@ export const state = {
 
   // ---- 设备数据 ----
   // devices: { id, gridX, gridY, w, h, color, borderColor, label, kind }
-  // kind 缺省(或 'crusher')为原有 3x3 设备；'merger'/'splitter' 为 1x1 节点，
-  // 分别额外带 mainOutEdge / mainInEdge(见 nodeDevicePorts)。
+  // kind='facility' 是真实基建设备(占绝大多数)，额外带 facilityId(对应
+  // facilities.js 里的设备 id)和 ports(落地时从模板拷贝下来的原始端口数据，
+  // 见 devices.js 的 facilityDevicePorts)；'merger'/'splitter'(含 pipe- 前缀
+  // 版本)为 1x1 节点，分别额外带 mainOutEdge / mainInEdge(见 nodeDevicePorts)。
   devices: [],
   nextId: 1,
 

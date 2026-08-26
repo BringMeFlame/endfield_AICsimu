@@ -1,5 +1,5 @@
 // ---- 设备数据模型、端口计算、碰撞检测 ----
-import { GRID_SIZE, PORT_COUNT, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, REACTOR_PORT_LAYOUT, REACTOR_BASE_ROLES } from './constants.js';
+import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS } from './constants.js';
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
@@ -78,55 +78,15 @@ export function hitTestDevice(worldX, worldY) {
 
 // ---- 端口(输入口/输出口) ----
 
-// 设备的朝向(rot: 0~3，每次 R 键旋转 +1，代表顺时针 90°*rot)决定物料流动方向
-// (flowDir，与 DIR_E/S/W/N 编号一致：0°→东，90°→南，180°→西，270°→北)。
-// 输出口位于 flowDir 指向的那条边，输入口位于其正对边，两者的端口箭头都指向 flowDir。
+// 设备的朝向：rot(0~3) 每次 R 键旋转 +1，代表绕设备中心顺时针转了 rot 个 90°。
+// 汇流器/分流器不使用这个函数(朝向由被切入的原连线的边决定，见 nodeDevicePorts)；
+// facilityDevicePorts 用它来把 facilities.js 里"未旋转坐标系"下的显式端口
+// (grid+dir) 转到当前朝向。
 export function flowDirOf(dev) {
   return ((dev.rot || 0) % 4 + 4) % 4;
 }
 export function oppositeDir(d) {
   return (d + 2) % 4;
-}
-
-// 沿设备某一条边取端口世界坐标。edge 用 DIR_E/S/W/N 表示该边朝外的方向
-// (DIR_E=右边缘、DIR_S=下边缘、DIR_W=左边缘、DIR_N=上边缘)。
-// dir 是该端口在寻路中使用的方向：输出口=离开设备的方向，输入口=必须笔直
-// 进入的方向；每个端口都带上自己的 dir，而不是整台设备共用一个，
-// 这样汇流器/分流器上分布在不同边的多个端口才能各自拥有正确的朝向。
-// cellCol/cellRow 是紧贴该端口、位于设备外侧的网格单元，作为寻路的起止格。
-// layout 可选：缺省时和历史行为完全一致(从偏移 0 开始连续放 min(PORT_COUNT,边长)
-// 个端口)；传 {count,spacing} 时改为居中、间隔 spacing 格放置 count 个端口，
-// 用于反应池"5 格边上放 2 个、间隔 1 格"这种非连续布局。
-function edgePorts(dev, pos, edge, dir, layout) {
-  const leftX = pos.gridX * GRID_SIZE, rightX = (pos.gridX + dev.w) * GRID_SIZE;
-  const topY = pos.gridY * GRID_SIZE, bottomY = (pos.gridY + dev.h) * GRID_SIZE;
-  const isVertical = edge === DIR_W || edge === DIR_E;
-  const edgeLen = isVertical ? dev.h : dev.w;
-  let offsets;
-  if (layout) {
-    const count = Math.min(layout.count, edgeLen);
-    const span = (count - 1) * layout.spacing + 1;
-    const margin = Math.floor((edgeLen - span) / 2);
-    offsets = Array.from({ length: count }, (_, i) => margin + i * layout.spacing);
-  } else {
-    const count = Math.min(PORT_COUNT, edgeLen);
-    offsets = Array.from({ length: count }, (_, i) => i);
-  }
-  const ports = [];
-  if (isVertical) {
-    const x = edge === DIR_W ? leftX : rightX;
-    const outsideCol = edge === DIR_W ? pos.gridX - 1 : pos.gridX + dev.w;
-    offsets.forEach((off, i) => {
-      ports.push({ index: i, x, y: topY + (off + 0.5) * GRID_SIZE, cellCol: outsideCol, cellRow: pos.gridY + off, dir });
-    });
-  } else {
-    const y = edge === DIR_N ? topY : bottomY;
-    const outsideRow = edge === DIR_N ? pos.gridY - 1 : pos.gridY + dev.h;
-    offsets.forEach((off, i) => {
-      ports.push({ index: i, x: leftX + (off + 0.5) * GRID_SIZE, y, cellCol: pos.gridX + off, cellRow: outsideRow, dir });
-    });
-  }
-  return ports;
 }
 
 // 1x1 节点(汇流器/分流器)在指定边上的单个端口。index 直接用边的方向常量
@@ -167,38 +127,6 @@ function nodeDevicePorts(dev, pos, portKind) {
   };
 }
 
-// 反应池(5x5)的边角色随旋转刚体转动：REACTOR_BASE_ROLES 定义 rot=0 时每条边
-// 的角色(上=传送带入/下=传送带出/左=管道入/右=管道出)，旋转时四条边一起按
-// (角色基准方向 + rot) % 4 转动，和粉碎机 flowDirOf 决定输出边是同一个技巧，
-// 只是从 1 组角色推广到 4 组；REACTOR_BASE_ROLES 是到 ALL_DIRS 的双射，任何
-// 旋转下四条边都保持两两不同，角色不会冲突。
-function reactorEdgeFor(dev, role) {
-  return (REACTOR_BASE_ROLES[role] + flowDirOf(dev)) % 4;
-}
-
-// 反应池：上下两条边各放 2 个传送带端口(输入/输出)，左右两条边各放 2 个管道
-// 端口(输入/输出)，每条边内部"两端各留 1 格、中间留 1 格"(REACTOR_PORT_LAYOUT)。
-// pipe 端口的 index 特意偏移到 belt 端口之后，让同一设备 inputs/outputs 合并
-// 数组里每个 index 全局唯一——resolveConnEndpoint 是按 index 在合并数组里查
-// 端口的，belt 连线和 pipe 连线各自只会用到自己那一段 index，不会查串。
-function reactorDevicePorts(dev, pos) {
-  const beltInEdge = reactorEdgeFor(dev, 'beltIn');
-  const beltOutEdge = reactorEdgeFor(dev, 'beltOut');
-  const pipeInEdge = reactorEdgeFor(dev, 'pipeIn');
-  const pipeOutEdge = reactorEdgeFor(dev, 'pipeOut');
-
-  const beltInputs = edgePorts(dev, pos, beltInEdge, oppositeDir(beltInEdge), REACTOR_PORT_LAYOUT)
-    .map(p => ({ ...p, portKind: 'belt' }));
-  const beltOutputs = edgePorts(dev, pos, beltOutEdge, beltOutEdge, REACTOR_PORT_LAYOUT)
-    .map(p => ({ ...p, portKind: 'belt' }));
-  const pipeInputs = edgePorts(dev, pos, pipeInEdge, oppositeDir(pipeInEdge), REACTOR_PORT_LAYOUT)
-    .map((p, i) => ({ ...p, index: beltInputs.length + i, portKind: 'pipe' }));
-  const pipeOutputs = edgePorts(dev, pos, pipeOutEdge, pipeOutEdge, REACTOR_PORT_LAYOUT)
-    .map((p, i) => ({ ...p, index: beltOutputs.length + i, portKind: 'pipe' }));
-
-  return { inputs: beltInputs.concat(pipeInputs), outputs: beltOutputs.concat(pipeOutputs) };
-}
-
 // ---- 真实基建设备(facilities.js)的显式端口 ----
 
 // facilities.js 里 dir 是字符串(端口朝外的朝向)，转成本项目的 DIR_E/S/W/N。
@@ -227,11 +155,10 @@ function rotateFacilityPort(col, row, dir, baseW, baseH, rot) {
   }
 }
 
-// 显式端口坐标转世界坐标，公式和 singleCellPort/edgePorts 完全一致(格子中心
-// 沿朝外方向推半格到边界)，只是格子坐标是数据里显式给的，不是遍历一整条边
-// 推出来的；cellCol/cellRow 同理是"沿 dir 方向再往外一格"，和 edgePorts 的
-// outsideCol/outsideRow 是同一个推导(可以验证：col=0,dir=DIR_W 时退化成
-// leftX/pos.gridX-1，和 edgePorts 的 W 边分支完全一样)。
+// 显式端口坐标转世界坐标，公式和 singleCellPort 完全一致(格子中心沿朝外方向
+// 推半格到边界)，只是格子坐标是数据里显式给的具体 (col,row)，不是设备中心；
+// cellCol/cellRow 同理是"沿 dir 方向再往外一格"，即紧贴该端口、位于设备外侧
+// 的网格单元，作为寻路的起止格。
 function facilityCellPort(pos, col, row, dir, index, portKind) {
   const cx = (pos.gridX + col + 0.5) * GRID_SIZE;
   const cy = (pos.gridY + row + 0.5) * GRID_SIZE;
@@ -249,8 +176,8 @@ function facilityCellPort(pos, col, row, dir, index, portKind) {
 
 // facilities.js 真实设备的端口计算：dev.ports 是落地时从模板原样拷贝下来的
 // facilities.js 端口数组(未旋转坐标系)，这里按 dev.rot 转成当前朝向下的世界坐标。
-// index 分别在 inputs/outputs 数组内部从 0 计数(和其它 *DevicePorts 函数的
-// 约定一致，见 reactorDevicePorts 顶部注释)，不是 dev.ports 里的原始下标。
+// index 分别在 inputs/outputs 数组内部从 0 计数(和 nodeDevicePorts 的约定一致)，
+// 不是 dev.ports 里的原始下标。
 function facilityDevicePorts(dev, pos) {
   const rot = flowDirOf(dev);
   // dev.w/dev.h 是"当前(已旋转)"的占地；rot 为奇数时它们已经是互换过的，
@@ -269,16 +196,12 @@ function facilityDevicePorts(dev, pos) {
   return { inputs, outputs };
 }
 
+// 'facility'(真实基建设备)是唯一的默认分支，不用显式 kind 判断——除了下面
+// 两种 1x1 节点，所有能从工具栏生成的设备现在都是 facility。
 export function getDevicePorts(dev, pos) {
   if (dev.kind === 'merger' || dev.kind === 'splitter') return nodeDevicePorts(dev, pos, 'belt');
   if (dev.kind === 'pipe-merger' || dev.kind === 'pipe-splitter') return nodeDevicePorts(dev, pos, 'pipe');
-  if (dev.kind === 'reactor') return reactorDevicePorts(dev, pos);
-  if (dev.kind === 'facility') return facilityDevicePorts(dev, pos);
-  const flowDir = flowDirOf(dev);
-  return {
-    inputs: edgePorts(dev, pos, oppositeDir(flowDir), flowDir).map(p => ({ ...p, portKind: 'belt' })),
-    outputs: edgePorts(dev, pos, flowDir, flowDir).map(p => ({ ...p, portKind: 'belt' }))
-  };
+  return facilityDevicePorts(dev, pos);
 }
 
 // 端口拾取判定半径：放大到该端口所在的整个网格格子(直径一格，即半径为半格)，

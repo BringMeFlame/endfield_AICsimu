@@ -1034,16 +1034,15 @@ function bindKeyboardEvents() {
       if (state.selectedId === null) return;
       const dev = state.devices.find(d => d.id === state.selectedId);
       // 汇流器/分流器(传送带版和管道版)的朝向由被切入的原连线决定，不支持手动旋转；
-      // 反应池、粉碎机和真实基建设备(facility)都允许旋转，端口作为刚体整体随
-      // 旋转角度转动。
-      if (!dev || (dev.kind && dev.kind !== 'crusher' && dev.kind !== 'reactor' && dev.kind !== 'facility')) return;
+      // 真实基建设备(facility)允许旋转，端口作为刚体整体随旋转角度转动。
+      if (!dev || (dev.kind && dev.kind !== 'facility')) return;
       e.preventDefault();
       pushHistory();
       const beforeSnapshot = state.history[state.history.length - 1];
       dev.rot = (flowDirOf(dev) + 1) % 4;
       // facility 设备大多不是正方形(拆解机6x4、协议核心9x9等)，旋转是真的绕
-      // 中心转外形，宽高会互换；粉碎机/反应池是正方形，w/h 互换后数值不变，
-      // 这里不用按 kind 分支——统一处理更简单，也不会影响原有两种设备的行为。
+      // 中心转外形，宽高会互换；正方形设备(如粉碎机)互换后数值不变，这里不用
+      // 分情况处理。
       const tmp = dev.w;
       dev.w = dev.h;
       dev.h = tmp;

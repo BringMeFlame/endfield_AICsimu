@@ -2,7 +2,6 @@
 export const GRID_SIZE = 50; // 每个网格单元的世界坐标尺寸(px)
 
 // ---- 端口 / 寻路参数 ----
-export const PORT_COUNT = 3;        // 每台设备的输入口/输出口数量
 // 途经点拾取半径(屏幕像素，固定值不随缩放)。端口拾取判定改用整格大小(见
 // devices.js 的 findPortAt)，不再用这个固定小半径，这里改名是为了不再用
 // "PORT" 这个名字指代一个只服务于途经点的常量，避免混淆。
@@ -36,13 +35,6 @@ export const HISTORY_LIMIT = 30;
 export const HINT_NORMAL = '[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_BELT = '[左键] 拉传送带　|　[右键/E] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_PIPE = '[左键] 拉管道　|　[右键/Q] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
-
-// ---- 反应池(5x5)端口布局 ----
-// 5 格边上放 2 个端口、间隔 1 格(两端各留 1 格空隙、中间留 1 格空隙)。
-export const REACTOR_PORT_LAYOUT = { count: 2, spacing: 2 };
-// rot=0 时四条边的角色分配(顺时针 DIR_E/S/W/N 编号)：上=传送带入，下=传送带出，
-// 左=管道入，右=管道出；旋转时四组端口作为刚体一起转动，见 devices.js 的 reactorEdgeFor。
-export const REACTOR_BASE_ROLES = { beltIn: DIR_N, beltOut: DIR_S, pipeIn: DIR_W, pipeOut: DIR_E };
 
 // ---- 传送带调色板：白色基调地图上的半透明琥珀色条带，选中态更饱和/更不透明，
 // 失效态复用红色警示语义 ----
