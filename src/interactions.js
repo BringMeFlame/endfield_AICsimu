@@ -9,9 +9,10 @@ import {
 } from './devices.js';
 import {
   buildBlockedSet, buildBeltOccupancy, buildPipeOccupancy, aStarOrthogonal, removeSelfOverlap,
-  computePath, recomputeAllConnections, recomputeAllPipeConnections, recomputeAllFlows,
+  computePath, recomputeAllConnections, recomputeAllPipeConnections, recomputeAllForNetwork, recomputeAllFlows,
   hitTestConnection, hitTestPipeConnection, hitTestWaypoint, hitTestPipeWaypoint,
-  waypointInsertIndex, splitConnectionAtCell, cellOrientationsOf, findConnectionAtCell, findDanglingFreeEndAtCell,
+  waypointInsertIndex, splitConnectionAtCell, cellOrientationsOf, findConnectionAtCell,
+  findDanglingConnAtCell, extendDanglingConnection, fuseDanglingConnections,
   pickBestPort, pickNearestPortByDistance, resolveConnEndpoint, BELT_NETWORK, PIPE_NETWORK
 } from './pathfinding.js';
 import { draw } from './render.js';
@@ -35,22 +36,68 @@ function showCursorTooltip(text, clientX, clientY) {
   }, 1450);
 }
 
-// ---- 自由传送带模式：状态解析、实时预览与落地逻辑 ----
+// ---- 自由传送带/自由管道模式：状态解析、实时预览与落地逻辑 ----
+// 传送带和管道走同一套实现，靠下面 BELT_UI/PIPE_UI 这两个小描述符提供两者的
+// 差异点(状态字段读写、端口占用判断、分流器/汇流器设备 kind 等)，写法上和
+// pathfinding.js 里 BELT_NETWORK/PIPE_NETWORK 的 network 参数化风格保持一致；
+// 这里的描述符只放"自由画线交互层"专属的差异，不塞进 pathfinding.js 的
+// network 描述符(那个被 render.js/history.js 等其它模块共用，不该掺入 UI 状态)。
 
-// 把 freeBeltStart 解析为寻路用的具体 (col,row,dir)。kind='anyOutput' 时，
-// 在该设备当前空闲的输出口中，按到 (towardCol,towardRow) 代价最小挑选。
-function resolveFreeBeltStartForPathing(towardCol, towardRow, blocked, beltOccupancy) {
-  if (!state.freeBeltStart) return null;
-  if (state.freeBeltStart.kind === 'free') return { col: state.freeBeltStart.col, row: state.freeBeltStart.row, dir: null };
-  const dev = state.devices.find(d => d.id === state.freeBeltStart.deviceId);
+// 探测 (col,row) 这一格地面是否已有一条合法的传送带经过——管道分流器/汇流器
+// 需要架设在地面上，如果该格地面已经被传送带占用，允许放置但要显示地面冲突
+// 警示(见 groundConflict)。这里始终检查传送带网络，与"当前正在处理管道分流器
+// 还是管道汇流器"无关；传送带侧没有对应检查(不存在"传送带需要检查地面是否被
+// 管道占用"这种反向规则，管道是空中单位)。
+function groundHasBeltConflict(col, row) {
+  return !!findConnectionAtCell(col, row, BELT_NETWORK);
+}
+
+const BELT_UI = {
+  network: BELT_NETWORK,
+  portKind: 'belt',
+  getStart: () => state.freeBeltStart,
+  setStart: v => { state.freeBeltStart = v; },
+  getPreviewPts: () => state.freeBeltPreviewPts,
+  setPreviewPts: v => { state.freeBeltPreviewPts = v; },
+  setHoverDeviceId: v => { state.freeBeltHoverDeviceId = v; },
+  isOutputPortUsed, isInputPortUsed,
+  hitTestConn: hitTestConnection,
+  splitterKind: 'splitter', mergerKind: 'merger',
+  checkGroundConflict: null, // 传送带侧没有地面冲突检查，见 groundHasBeltConflict 的注释
+  enterMode: () => { state.freeBeltMode = true; },
+  setSelected: id => { state.selectedId = null; state.selectedConnectionId = id; },
+};
+const PIPE_UI = {
+  network: PIPE_NETWORK,
+  portKind: 'pipe',
+  getStart: () => state.freePipeStart,
+  setStart: v => { state.freePipeStart = v; },
+  getPreviewPts: () => state.freePipePreviewPts,
+  setPreviewPts: v => { state.freePipePreviewPts = v; },
+  setHoverDeviceId: v => { state.freePipeHoverDeviceId = v; },
+  isOutputPortUsed: isPipeOutputPortUsed, isInputPortUsed: isPipeInputPortUsed,
+  hitTestConn: hitTestPipeConnection,
+  splitterKind: 'pipe-splitter', mergerKind: 'pipe-merger',
+  checkGroundConflict: groundHasBeltConflict,
+  enterMode: () => { state.freePipeMode = true; },
+  setSelected: id => { state.selectedId = null; state.selectedPipeConnectionId = id; },
+};
+
+// 把 ui 对应模式的"起点"状态解析为寻路用的具体 (col,row,dir)。kind='anyOutput'
+// 时，在该设备当前空闲的输出口中，按到 (towardCol,towardRow) 代价最小挑选。
+function resolveFreeStartForPathing(ui, towardCol, towardRow, blocked, occupancy) {
+  const start = ui.getStart();
+  if (!start) return null;
+  if (start.kind === 'free') return { col: start.col, row: start.row, dir: null };
+  const dev = state.devices.find(d => d.id === start.deviceId);
   if (!dev) return null;
   const pos = effectiveGridPos(dev);
-  if (state.freeBeltStart.kind === 'port') {
-    const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === state.freeBeltStart.port);
+  if (start.kind === 'port') {
+    const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === start.port);
     return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir } : null;
   }
-  const avail = getDevicePorts(dev, pos).outputs.filter(p => !isOutputPortUsed(dev.id, p.index));
-  const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, beltOccupancy);
+  const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(dev.id, p.index));
+  const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, occupancy);
   return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir } : null;
 }
 
@@ -58,18 +105,24 @@ function resolveFreeBeltStartForPathing(towardCol, towardRow, blocked, beltOccup
 //  1) 精确点在某个未占用的输出口上 → 直接用该端口
 //  2) 精确点在输入口上 → 严格禁止从输入口拉线，提示并取消
 //  3) 点在设备本体(非精确端口)上 → 兜底，自动选离点击处最近的可用输出口
-//     (只在该设备的传送带口里挑，管道口不算数)
-//  4) 点在某条已有传送带"悬空的自由端点"(fromCell/toCell 未接设备)所在格子上
-//     → 视为空白网格起点，可以从这个未完成的悬空端点继续延伸出新路径
-//  5) 点在已有传送带其它位置上 → 此阶段不处理(生成分流器走 Alt+点击)
+//     (只在该网络自己的端口里挑，另一种网络的口不算数)
+//  4) 点在某条已有连线"悬空的自由端点"(fromCell/toCell 未接设备)所在格子上
+//     → 视为空白网格起点，可以从这个未完成的悬空端点继续延伸出新路径；如果
+//     命中的正是悬空的 toCell(该连线已有真实源头，只是下游还没接完)，额外
+//     记下 continuesConn，供 finalizeFreeConnection 落地时把新画的这一笔并入
+//     这条连线本身(同一个 id)，而不是新建一条只是坐标凑巧重合的独立连线。
+//     命中悬空的 fromCell 时不记——那种情况下两条线只是碰巧共享一个空白格
+//     坐标，流向并不连续，不该被静默合并(见 pathfinding.js 里
+//     findDanglingConnAtCell 的注释)。
+//  5) 点在已有连线其它位置上 → 此阶段不处理(生成分流器走 Alt+点击)
 //  6) 其余视为空白网格起点
-function resolveFreeBeltStartClick(clientX, clientY) {
-  const port = findPortAt(clientX, clientY, 'output', 'belt');
+function resolveFreeStartClick(ui, clientX, clientY) {
+  const port = findPortAt(clientX, clientY, 'output', ui.portKind);
   if (port) {
-    if (isOutputPortUsed(port.deviceId, port.index)) return null;
+    if (ui.isOutputPortUsed(port.deviceId, port.index)) return null;
     return { kind: 'port', deviceId: port.deviceId, port: port.index };
   }
-  const inPort = findPortAt(clientX, clientY, 'input', 'belt');
+  const inPort = findPortAt(clientX, clientY, 'input', ui.portKind);
   if (inPort) {
     showCursorTooltip('无法选择输入口作为起点', clientX, clientY);
     return null;
@@ -78,7 +131,7 @@ function resolveFreeBeltStartClick(clientX, clientY) {
   const hitDev = hitTestDevice(worldPos.x, worldPos.y);
   if (hitDev) {
     const pos = effectiveGridPos(hitDev);
-    const avail = getDevicePorts(hitDev, pos).outputs.filter(p => p.portKind === 'belt' && !isOutputPortUsed(hitDev.id, p.index));
+    const avail = getDevicePorts(hitDev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(hitDev.id, p.index));
     if (avail.length === 0) return null;
     const cell = worldToCell(worldPos.x, worldPos.y);
     const best = pickNearestPortByDistance(avail, cell.col, cell.row);
@@ -86,92 +139,110 @@ function resolveFreeBeltStartClick(clientX, clientY) {
     return { kind: 'port', deviceId: hitDev.id, port: best.index };
   }
   const cell = worldToCell(worldPos.x, worldPos.y);
-  if (findDanglingFreeEndAtCell(cell.col, cell.row, BELT_NETWORK)) return { kind: 'free', col: cell.col, row: cell.row };
-  if (hitTestConnection(clientX, clientY)) return null;
+  const dangling = findDanglingConnAtCell(cell.col, cell.row, ui.network);
+  if (dangling) {
+    return dangling.end === 'to'
+      ? { kind: 'free', col: cell.col, row: cell.row, continuesConn: dangling.conn }
+      : { kind: 'free', col: cell.col, row: cell.row };
+  }
+  if (ui.hitTestConn(clientX, clientY)) return null;
   return { kind: 'free', col: cell.col, row: cell.row };
 }
 
 // 终点(B)点击优先级：
 //  1) 精确点在某个未占用的输入口上 → 直接用该端口
 //  2) 精确点在输出口上 → 严格禁止把输出口当终点，提示并保持预览状态(不结束画线)
-//  3) 点在已有传送带上 → 触发自动汇流
-//  4) 点在设备本体(非精确端口)上 → 兜底，自动选离起点 A 最近的可用输入口
-//  5) 其余视为空白网格终点
-function resolveFreeBeltEndClick(clientX, clientY) {
-  const port = findPortAt(clientX, clientY, 'input', 'belt');
+//  3) 点在设备本体(非精确端口)上 → 兜底，自动选离起点 A 最近的可用输入口
+//  4) 点落在某条已有连线"悬空的自由端点(fromCell)"所在格子 → 记下
+//     continuesConn，供 finalizeFreeConnection 把这条连线的源头接上(镜像上面
+//     resolveFreeStartClick 第 4 条命中 toCell 的情况)；命中 toCell 的情况不记，
+//     理由同上，落到第 5 条按"点在已有连线上"处理。这一条必须排在第 5 条
+//     "点在已有连线上→自动汇流"前面：悬空端点本身必然也是该连线渲染路径上的
+//     一个点，hitTestConn 的像素距离命中会无差别地先逮到它，如果顺序反了，
+//     点悬空端点永远会被判成"点在已有连线上"、自动插一个汇流器，续接分支就
+//     变成永远走不到的死代码。
+//  5) 点在已有连线其它位置上 → 触发自动汇流
+//  6) 其余视为空白网格终点
+function resolveFreeEndClick(ui, clientX, clientY) {
+  const port = findPortAt(clientX, clientY, 'input', ui.portKind);
   if (port) {
-    if (isInputPortUsed(port.deviceId, port.index)) return null;
+    if (ui.isInputPortUsed(port.deviceId, port.index)) return null;
     return { kind: 'port', deviceId: port.deviceId, port: port.index };
   }
-  const outPort = findPortAt(clientX, clientY, 'output', 'belt');
+  const outPort = findPortAt(clientX, clientY, 'output', ui.portKind);
   if (outPort) {
     showCursorTooltip('无法选择输出口作为终点', clientX, clientY);
     return null;
   }
-  // 设备本体优先于传送带：落点若在某个已有设备(含汇流器/分流器节点)的
+  // 设备本体优先于连线：落点若在某个已有设备(含汇流器/分流器节点)的
   // footprint 内，一律按设备本体兜底逻辑处理，避免设备正下方/内部残留的
-  // 传送带线段抢先命中，导致点击已有汇流器节点添加输入时被误判为再次点击
-  // 传送带本身。
+  // 连线线段抢先命中，导致点击已有汇流器节点添加输入时被误判为再次点击
+  // 连线本身。
   const worldPos = screenToWorld(clientX, clientY);
   const hitDev = hitTestDevice(worldPos.x, worldPos.y);
   if (hitDev) {
     const pos = effectiveGridPos(hitDev);
-    const avail = getDevicePorts(hitDev, pos).inputs.filter(p => p.portKind === 'belt' && !isInputPortUsed(hitDev.id, p.index));
+    const avail = getDevicePorts(hitDev, pos).inputs.filter(p => p.portKind === ui.portKind && !ui.isInputPortUsed(hitDev.id, p.index));
     if (avail.length === 0) return null;
     const blocked = buildBlockedSet();
-    const beltOccupancy = buildBeltOccupancy(null);
+    const occupancy = ui.network.buildOccupancy(null);
     // 用第一个候选输入口的外侧格子(必定在设备footprint之外、不会被阻挡)作为
     // 解析起点(尤其是分流器 anyOutput 起点)时的寻路参照，而不是设备本体的
     // 原点格(那格本身就在设备footprint内部，会被当成障碍导致寻路失败)。
-    const startResolved = resolveFreeBeltStartForPathing(avail[0].cellCol, avail[0].cellRow, blocked, beltOccupancy);
+    const startResolved = resolveFreeStartForPathing(ui, avail[0].cellCol, avail[0].cellRow, blocked, occupancy);
     const refCol = startResolved ? startResolved.col : pos.gridX;
     const refRow = startResolved ? startResolved.row : pos.gridY;
     const refDir = startResolved ? startResolved.dir : null;
-    const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, beltOccupancy);
+    const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, occupancy);
     if (!best) return null;
     return { kind: 'port', deviceId: hitDev.id, port: best.index };
   }
-  const belt = hitTestConnection(clientX, clientY);
-  if (belt) return { kind: 'merge', conn: belt.conn };
   const cell = worldToCell(worldPos.x, worldPos.y);
+  const dangling = findDanglingConnAtCell(cell.col, cell.row, ui.network);
+  if (dangling && dangling.end === 'from') return { kind: 'free', col: cell.col, row: cell.row, continuesConn: dangling.conn };
+  const hitConn = ui.hitTestConn(clientX, clientY);
+  if (hitConn) return { kind: 'merge', conn: hitConn.conn };
   return { kind: 'free', col: cell.col, row: cell.row };
 }
 
 // 鼠标每次移动都重算一次"起点 A → 当前悬停格"的 A* 预览路径(终点方向不限，
 // 仅供预览；真正落地时才会按终点自身的方向要求精确寻路)。同时更新设备本体
 // 悬停高亮：只在鼠标没有精确落在某个端口上、但落在设备本体上时高亮。
-function updateFreeBeltPreview(hoverClientX, hoverClientY) {
-  state.freeBeltPreviewPts = null;
+function updateFreePreview(ui, hoverClientX, hoverClientY) {
+  ui.setPreviewPts(null);
   const worldPos = screenToWorld(hoverClientX, hoverClientY);
-  if (!findPortAt(hoverClientX, hoverClientY, 'output', 'belt') && !findPortAt(hoverClientX, hoverClientY, 'input', 'belt')) {
+  if (!findPortAt(hoverClientX, hoverClientY, 'output', ui.portKind) && !findPortAt(hoverClientX, hoverClientY, 'input', ui.portKind)) {
     const hovered = hitTestDevice(worldPos.x, worldPos.y);
-    state.freeBeltHoverDeviceId = hovered ? hovered.id : null;
+    ui.setHoverDeviceId(hovered ? hovered.id : null);
   } else {
-    state.freeBeltHoverDeviceId = null;
+    ui.setHoverDeviceId(null);
   }
-  if (!state.freeBeltMode || !state.freeBeltStart) return;
+  if (!ui.getStart()) return;
   const hoverCell = worldToCell(worldPos.x, worldPos.y);
   const blocked = buildBlockedSet();
-  const beltOccupancy = buildBeltOccupancy(null);
+  const occupancy = ui.network.buildOccupancy(null);
 
-  const startResolved = resolveFreeBeltStartForPathing(hoverCell.col, hoverCell.row, blocked, beltOccupancy);
+  const startResolved = resolveFreeStartForPathing(ui, hoverCell.col, hoverCell.row, blocked, occupancy);
   if (!startResolved) return;
 
-  const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, beltOccupancy);
+  const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, occupancy);
   if (!cellPath) return;
   const cleaned = removeSelfOverlap(cellPath);
-  state.freeBeltPreviewPts = cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE }));
+  ui.setPreviewPts(cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE })));
 }
 
-// 第二次点击落地：解析终点(落在既有传送带上时先插入汇流器节点)，再解析起点
-// (分流器新分支时在空闲输出口中挑选最短路的一个)，最后生成正式连线。
-function finalizeFreeBeltConnection(endResolved, clientX, clientY) {
-  if (!state.freeBeltStart || !endResolved) return;
+// 第二次点击落地：解析终点(落在既有连线上时先插入汇流器节点)，再解析起点
+// (分流器新分支时在空闲输出口中挑选最短路的一个)，最后生成正式连线——如果
+// 起点/终点命中了悬空端点续接(见 resolveFreeStartClick/resolveFreeEndClick)，
+// 改成把新画的这一笔并入被续接的旧连线本身，而不是新建一条。
+function finalizeFreeConnection(ui, endResolved, clientX, clientY) {
+  const start = ui.getStart();
+  if (!start || !endResolved) return;
   pushHistory();
   const beforeSnapshot = state.history[state.history.length - 1];
 
   const blocked = buildBlockedSet();
-  const beltOccupancy = buildBeltOccupancy(null);
+  const occupancy = ui.network.buildOccupancy(null);
 
   let toDeviceId = null, toPort = null, toCell = null;
   let roughTargetCol, roughTargetRow;
@@ -191,263 +262,14 @@ function finalizeFreeBeltConnection(endResolved, clientX, clientY) {
     const worldPos = screenToWorld(clientX, clientY);
     const cell = worldToCell(worldPos.x, worldPos.y);
     const hostConn = endResolved.conn;
-    if (!hostConn.cellPath) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
+    if (!hostConn.cellPath) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     const hit = cellOrientationsOf(hostConn.cellPath, hostConn.startDir, hostConn.goalDir)
       .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
-    if (!hit) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    mergerNode = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'merger');
-    roughTargetCol = mergerNode.gridX; roughTargetRow = mergerNode.gridY;
-  } else {
-    return;
-  }
-
-  // ---- 解析起点 ----
-  let fromDeviceId = null, fromPort = null, fromCell = null;
-  if (state.freeBeltStart.kind === 'free') {
-    fromCell = { col: state.freeBeltStart.col, row: state.freeBeltStart.row };
-  } else if (state.freeBeltStart.kind === 'port') {
-    fromDeviceId = state.freeBeltStart.deviceId;
-    fromPort = state.freeBeltStart.port;
-  } else if (state.freeBeltStart.kind === 'anyOutput') {
-    const dev = state.devices.find(d => d.id === state.freeBeltStart.deviceId);
-    if (!dev) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    const pos = effectiveGridPos(dev);
-    const avail = getDevicePorts(dev, pos).outputs.filter(p => !isOutputPortUsed(dev.id, p.index));
-    const best = pickBestPort(avail, roughTargetCol, roughTargetRow, null, true, blocked, beltOccupancy);
-    if (!best) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    fromDeviceId = dev.id;
-    fromPort = best.index;
-  }
-
-  // ---- 若终点是刚生成的汇流器，用已确定的起点方向挑选代价最小的空闲输入口 ----
-  if (mergerNode) {
-    const pos = effectiveGridPos(mergerNode);
-    const availInputs = getDevicePorts(mergerNode, pos).inputs.filter(p => !isInputPortUsed(mergerNode.id, p.index));
-    if (availInputs.length === 0) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    const startResolved = resolveConnEndpoint(fromDeviceId, fromPort, fromCell, true);
-    if (!startResolved) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    const bestInput = pickBestPort(availInputs, startResolved.cellCol, startResolved.cellRow, startResolved.dir, false, blocked, beltOccupancy);
-    if (!bestInput) { state.freeBeltStart = null; state.freeBeltPreviewPts = null; draw(); return; }
-    toDeviceId = mergerNode.id;
-    toPort = bestInput.index;
-  }
-
-  const conn = {
-    id: state.nextConnId++,
-    fromDeviceId, fromPort, fromCell,
-    toDeviceId, toPort, toCell,
-    waypoints: [], points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
-  };
-  const res = computePath(conn);
-  conn.points = res.points;
-  conn.cellPath = res.cellPath;
-  conn.startDir = res.startDir;
-  conn.goalDir = res.goalDir;
-  conn.invalid = res.invalid;
-  state.connections.push(conn);
-  state.selectedConnectionId = conn.id;
-
-  state.freeBeltStart = null;
-  state.freeBeltPreviewPts = null;
-  recomputeAllConnections();
-  // 新分支落地(尤其是终点落在既有传送带上、自动生成汇流器节点时)可能连带把
-  // 某条本来正常的旧连线挤成 invalid——这条新连线自己是否 invalid 不受影响
-  // (维持"画到不可达位置、留给用户后续调整"的既有行为)，但绝不能让这次操作
-  // 顺手弄坏一条别的、原本合法的连线，所以整体撤销、退回操作前的状态。
-  if (brokeExistingValidConnection(beforeSnapshot)) {
-    revertLastHistoryStep();
-    state.selectedConnectionId = null;
-  }
-  draw();
-}
-
-// Alt+左键点击已有传送带任意一格：原地生成分流器节点，并自动进入自由传送带
-// 模式、把该节点设为起点 A(具体从哪个空闲输出口出发，留到落地时按最短路挑选)。
-function createSplitterAtClick(clientX, clientY) {
-  const belt = hitTestConnection(clientX, clientY);
-  if (!belt) return false;
-  const worldPos = screenToWorld(clientX, clientY);
-  const cell = worldToCell(worldPos.x, worldPos.y);
-  const hostConn = belt.conn;
-  if (!hostConn.cellPath) return false;
-  const hit = cellOrientationsOf(hostConn.cellPath, hostConn.startDir, hostConn.goalDir)
-    .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
-  if (!hit) return false;
-  pushHistory();
-  const beforeSnapshot = state.history[state.history.length - 1];
-  const splitter = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'splitter');
-  if (brokeExistingValidConnection(beforeSnapshot)) {
-    revertLastHistoryStep();
-    return false;
-  }
-  state.freeBeltMode = true;
-  state.freeBeltStart = { kind: 'anyOutput', deviceId: splitter.id };
-  state.freeBeltPreviewPts = null;
-  state.selectedId = null;
-  state.selectedConnectionId = null;
-  updateHintText();
-  return true;
-}
-
-// ---- 自由管道模式：状态解析、实时预览与落地逻辑(结构逐字镜像上面的传送带版) ----
-
-// 把 freePipeStart 解析为寻路用的具体 (col,row,dir)，镜像 resolveFreeBeltStartForPathing。
-function resolveFreePipeStartForPathing(towardCol, towardRow, blocked, pipeOccupancy) {
-  if (!state.freePipeStart) return null;
-  if (state.freePipeStart.kind === 'free') return { col: state.freePipeStart.col, row: state.freePipeStart.row, dir: null };
-  const dev = state.devices.find(d => d.id === state.freePipeStart.deviceId);
-  if (!dev) return null;
-  const pos = effectiveGridPos(dev);
-  if (state.freePipeStart.kind === 'port') {
-    const p = getDevicePorts(dev, pos).outputs.find(pp => pp.index === state.freePipeStart.port);
-    return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir } : null;
-  }
-  const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === 'pipe' && !isPipeOutputPortUsed(dev.id, p.index));
-  const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, pipeOccupancy);
-  return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir } : null;
-}
-
-// 管道起点(A)点击优先级：
-//  1) 精确点在某个未占用的管道输出口上 → 直接用该端口
-//  2) 精确点在管道输入口上 → 严格禁止从输入口拉线，提示并取消
-//  3) 点在设备本体(非精确端口)上 → 兜底，自动选离点击处最近的可用管道输出口
-//  4) 点在某条已有管道"悬空的自由端点"所在格子上 → 视为空白网格起点，可以从
-//     这个未完成的悬空端点继续延伸出新路径
-//  5) 点在已有管道其它位置上 → 此阶段不处理(生成管道分流器走 Alt+点击)
-//  6) 其余视为空白网格起点
-function resolveFreePipeStartClick(clientX, clientY) {
-  const port = findPortAt(clientX, clientY, 'output', 'pipe');
-  if (port) {
-    if (isPipeOutputPortUsed(port.deviceId, port.index)) return null;
-    return { kind: 'port', deviceId: port.deviceId, port: port.index };
-  }
-  const inPort = findPortAt(clientX, clientY, 'input', 'pipe');
-  if (inPort) {
-    showCursorTooltip('无法选择输入口作为起点', clientX, clientY);
-    return null;
-  }
-  const worldPos = screenToWorld(clientX, clientY);
-  const hitDev = hitTestDevice(worldPos.x, worldPos.y);
-  if (hitDev) {
-    const pos = effectiveGridPos(hitDev);
-    const avail = getDevicePorts(hitDev, pos).outputs.filter(p => p.portKind === 'pipe' && !isPipeOutputPortUsed(hitDev.id, p.index));
-    if (avail.length === 0) return null;
-    const cell = worldToCell(worldPos.x, worldPos.y);
-    const best = pickNearestPortByDistance(avail, cell.col, cell.row);
-    if (!best) return null;
-    return { kind: 'port', deviceId: hitDev.id, port: best.index };
-  }
-  const cell = worldToCell(worldPos.x, worldPos.y);
-  if (findDanglingFreeEndAtCell(cell.col, cell.row, PIPE_NETWORK)) return { kind: 'free', col: cell.col, row: cell.row };
-  if (hitTestPipeConnection(clientX, clientY)) return null;
-  return { kind: 'free', col: cell.col, row: cell.row };
-}
-
-// 管道终点(B)点击优先级：
-//  1) 精确点在某个未占用的管道输入口上 → 直接用该端口
-//  2) 精确点在管道输出口上 → 严格禁止把输出口当终点，提示并保持预览状态(不结束画线)
-//  3) 点在已有管道上 → 触发自动汇流
-//  4) 点在设备本体(非精确端口)上 → 兜底，自动选离起点 A 最近的可用管道输入口
-//  5) 其余视为空白网格终点
-function resolveFreePipeEndClick(clientX, clientY) {
-  const port = findPortAt(clientX, clientY, 'input', 'pipe');
-  if (port) {
-    if (isPipeInputPortUsed(port.deviceId, port.index)) return null;
-    return { kind: 'port', deviceId: port.deviceId, port: port.index };
-  }
-  const outPort = findPortAt(clientX, clientY, 'output', 'pipe');
-  if (outPort) {
-    showCursorTooltip('无法选择输出口作为终点', clientX, clientY);
-    return null;
-  }
-  const worldPos = screenToWorld(clientX, clientY);
-  const hitDev = hitTestDevice(worldPos.x, worldPos.y);
-  if (hitDev) {
-    const pos = effectiveGridPos(hitDev);
-    const avail = getDevicePorts(hitDev, pos).inputs.filter(p => p.portKind === 'pipe' && !isPipeInputPortUsed(hitDev.id, p.index));
-    if (avail.length === 0) return null;
-    const blocked = buildBlockedSet();
-    const pipeOccupancy = buildPipeOccupancy(null);
-    const startResolved = resolveFreePipeStartForPathing(avail[0].cellCol, avail[0].cellRow, blocked, pipeOccupancy);
-    const refCol = startResolved ? startResolved.col : pos.gridX;
-    const refRow = startResolved ? startResolved.row : pos.gridY;
-    const refDir = startResolved ? startResolved.dir : null;
-    const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, pipeOccupancy);
-    if (!best) return null;
-    return { kind: 'port', deviceId: hitDev.id, port: best.index };
-  }
-  const pipe = hitTestPipeConnection(clientX, clientY);
-  if (pipe) return { kind: 'merge', conn: pipe.conn };
-  const cell = worldToCell(worldPos.x, worldPos.y);
-  return { kind: 'free', col: cell.col, row: cell.row };
-}
-
-// 镜像 updateFreeBeltPreview，改用管道占用集合/管道悬停高亮字段。
-function updateFreePipePreview(hoverClientX, hoverClientY) {
-  state.freePipePreviewPts = null;
-  const worldPos = screenToWorld(hoverClientX, hoverClientY);
-  if (!findPortAt(hoverClientX, hoverClientY, 'output', 'pipe') && !findPortAt(hoverClientX, hoverClientY, 'input', 'pipe')) {
-    const hovered = hitTestDevice(worldPos.x, worldPos.y);
-    state.freePipeHoverDeviceId = hovered ? hovered.id : null;
-  } else {
-    state.freePipeHoverDeviceId = null;
-  }
-  if (!state.freePipeMode || !state.freePipeStart) return;
-  const hoverCell = worldToCell(worldPos.x, worldPos.y);
-  const blocked = buildBlockedSet();
-  const pipeOccupancy = buildPipeOccupancy(null);
-
-  const startResolved = resolveFreePipeStartForPathing(hoverCell.col, hoverCell.row, blocked, pipeOccupancy);
-  if (!startResolved) return;
-
-  const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, pipeOccupancy);
-  if (!cellPath) return;
-  const cleaned = removeSelfOverlap(cellPath);
-  state.freePipePreviewPts = cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE }));
-}
-
-// 探测 (col,row) 这一格地面是否已有一条合法的传送带经过——管道分流器/汇流器
-// 需要架设在地面上，如果该格地面已经被传送带占用，允许放置但要显示地面冲突
-// 警示(见 groundConflict)。这里始终检查传送带网络，与"当前正在处理管道分流器
-// 还是管道汇流器"无关。
-function groundHasBeltConflict(col, row) {
-  return !!findConnectionAtCell(col, row, BELT_NETWORK);
-}
-
-// 第二次点击落地，镜像 finalizeFreeBeltConnection：解析终点(落在既有管道上时
-// 先插入管道汇流器节点)，再解析起点，最后生成正式管道连线。
-function finalizePipeConnection(endResolved, clientX, clientY) {
-  if (!state.freePipeStart || !endResolved) return;
-  pushHistory();
-  const beforeSnapshot = state.history[state.history.length - 1];
-
-  const blocked = buildBlockedSet();
-  const pipeOccupancy = buildPipeOccupancy(null);
-
-  let toDeviceId = null, toPort = null, toCell = null;
-  let roughTargetCol, roughTargetRow;
-  let mergerNode = null;
-
-  if (endResolved.kind === 'port') {
-    toDeviceId = endResolved.deviceId;
-    toPort = endResolved.port;
-    const dev = state.devices.find(d => d.id === toDeviceId);
-    const pos = effectiveGridPos(dev);
-    const p = getDevicePorts(dev, pos).inputs.find(pp => pp.index === toPort);
-    roughTargetCol = p.cellCol; roughTargetRow = p.cellRow;
-  } else if (endResolved.kind === 'free') {
-    toCell = { col: endResolved.col, row: endResolved.row };
-    roughTargetCol = endResolved.col; roughTargetRow = endResolved.row;
-  } else if (endResolved.kind === 'merge') {
-    const worldPos = screenToWorld(clientX, clientY);
-    const cell = worldToCell(worldPos.x, worldPos.y);
-    const hostConn = endResolved.conn;
-    if (!hostConn.cellPath) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
-    const hit = cellOrientationsOf(hostConn.cellPath, hostConn.startDir, hostConn.goalDir)
-      .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
-    if (!hit) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
-    const conflict = groundHasBeltConflict(cell.col, cell.row);
-    mergerNode = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'pipe-merger', PIPE_NETWORK);
+    if (!hit) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
+    // 管道汇流器落在已有传送带地面格上是被批准的例外(见 groundHasBeltConflict
+    // 的地面冲突警示)，传送带侧 ui.checkGroundConflict 为 null，跳过。
+    const conflict = ui.checkGroundConflict ? ui.checkGroundConflict(cell.col, cell.row) : false;
+    mergerNode = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, ui.mergerKind, ui.network);
     if (conflict) mergerNode.groundConflict = true;
     roughTargetCol = mergerNode.gridX; roughTargetRow = mergerNode.gridY;
   } else {
@@ -456,90 +278,116 @@ function finalizePipeConnection(endResolved, clientX, clientY) {
 
   // ---- 解析起点 ----
   let fromDeviceId = null, fromPort = null, fromCell = null;
-  if (state.freePipeStart.kind === 'free') {
-    fromCell = { col: state.freePipeStart.col, row: state.freePipeStart.row };
-  } else if (state.freePipeStart.kind === 'port') {
-    fromDeviceId = state.freePipeStart.deviceId;
-    fromPort = state.freePipeStart.port;
-  } else if (state.freePipeStart.kind === 'anyOutput') {
-    const dev = state.devices.find(d => d.id === state.freePipeStart.deviceId);
-    if (!dev) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
+  if (start.kind === 'free') {
+    fromCell = { col: start.col, row: start.row };
+  } else if (start.kind === 'port') {
+    fromDeviceId = start.deviceId;
+    fromPort = start.port;
+  } else if (start.kind === 'anyOutput') {
+    const dev = state.devices.find(d => d.id === start.deviceId);
+    if (!dev) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     const pos = effectiveGridPos(dev);
-    const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === 'pipe' && !isPipeOutputPortUsed(dev.id, p.index));
-    const best = pickBestPort(avail, roughTargetCol, roughTargetRow, null, true, blocked, pipeOccupancy);
-    if (!best) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
+    const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(dev.id, p.index));
+    const best = pickBestPort(avail, roughTargetCol, roughTargetRow, null, true, blocked, occupancy);
+    if (!best) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     fromDeviceId = dev.id;
     fromPort = best.index;
   }
 
-  // ---- 若终点是刚生成的管道汇流器，用已确定的起点方向挑选代价最小的空闲输入口 ----
+  // ---- 若终点是刚生成的汇流器，用已确定的起点方向挑选代价最小的空闲输入口 ----
   if (mergerNode) {
     const pos = effectiveGridPos(mergerNode);
-    const availInputs = getDevicePorts(mergerNode, pos).inputs.filter(p => !isPipeInputPortUsed(mergerNode.id, p.index));
-    if (availInputs.length === 0) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
+    const availInputs = getDevicePorts(mergerNode, pos).inputs.filter(p => !ui.isInputPortUsed(mergerNode.id, p.index));
+    if (availInputs.length === 0) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     const startResolved = resolveConnEndpoint(fromDeviceId, fromPort, fromCell, true);
-    if (!startResolved) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
-    const bestInput = pickBestPort(availInputs, startResolved.cellCol, startResolved.cellRow, startResolved.dir, false, blocked, pipeOccupancy);
-    if (!bestInput) { state.freePipeStart = null; state.freePipePreviewPts = null; draw(); return; }
+    if (!startResolved) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
+    const bestInput = pickBestPort(availInputs, startResolved.cellCol, startResolved.cellRow, startResolved.dir, false, blocked, occupancy);
+    if (!bestInput) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     toDeviceId = mergerNode.id;
     toPort = bestInput.index;
   }
 
-  const conn = {
-    id: state.nextPipeConnId++,
-    fromDeviceId, fromPort, fromCell,
-    toDeviceId, toPort, toCell,
-    waypoints: [], points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
-  };
-  const res = computePath(conn, PIPE_NETWORK);
-  conn.points = res.points;
-  conn.cellPath = res.cellPath;
-  conn.startDir = res.startDir;
-  conn.goalDir = res.goalDir;
-  conn.invalid = res.invalid;
-  state.pipeConnections.push(conn);
-  state.selectedPipeConnectionId = conn.id;
+  // ---- 悬空端点续接：起点/终点若命中了别的连线的悬空端点，把这一笔并入那条
+  // 连线本身(同一个 id)，而不是新建一条；两头都命中且分属两条不同连线时，
+  // 三段一次融合成一条(见 pathfinding.js 的 fuseDanglingConnections)。两头
+  // 命中的是同一条连线(自环，没有物理意义)时按普通新建连线处理。----
+  const startMatch = start.continuesConn || null;
+  const endMatch = endResolved.continuesConn || null;
+  const selfLoop = startMatch && endMatch && startMatch === endMatch;
+  let mergedConn = null;
+  if (!selfLoop && startMatch && endMatch) {
+    fuseDanglingConnections(startMatch, endMatch, ui.network);
+    mergedConn = startMatch;
+  } else if (!selfLoop && startMatch) {
+    extendDanglingConnection(startMatch, 'to', { deviceId: toDeviceId, port: toPort, cell: toCell }, ui.network);
+    mergedConn = startMatch;
+  } else if (!selfLoop && endMatch) {
+    extendDanglingConnection(endMatch, 'from', { deviceId: fromDeviceId, port: fromPort, cell: fromCell }, ui.network);
+    mergedConn = endMatch;
+  }
 
-  state.freePipeStart = null;
-  state.freePipePreviewPts = null;
-  recomputeAllPipeConnections();
-  // 这里故意只检查 PIPE_NETWORK，不要加 BELT_NETWORK 检查——管道汇流器落在
-  // 已有传送带地面格上是被批准的例外(见上面 groundConflict 的地面冲突警示)，
-  // 允许这次操作弄坏地面传送带的路径；"不能弄坏别的合法连线"这条硬规则只在
-  // 管道网络自身内部生效。
-  if (brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK)) {
+  let newConnId;
+  if (mergedConn) {
+    newConnId = mergedConn.id;
+  } else {
+    const conn = {
+      id: ui.network.nextId(),
+      fromDeviceId, fromPort, fromCell,
+      toDeviceId, toPort, toCell,
+      waypoints: [], points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
+    };
+    const res = computePath(conn, ui.network);
+    conn.points = res.points;
+    conn.cellPath = res.cellPath;
+    conn.startDir = res.startDir;
+    conn.goalDir = res.goalDir;
+    conn.invalid = res.invalid;
+    ui.network.getConns().push(conn);
+    newConnId = conn.id;
+  }
+  ui.setSelected(newConnId);
+
+  ui.setStart(null);
+  ui.setPreviewPts(null);
+  recomputeAllForNetwork(ui.network);
+  // 新分支落地(尤其是终点落在既有连线上、自动生成汇流器节点时)可能连带把
+  // 某条本来正常的旧连线挤成 invalid——这条新连线自己是否 invalid 不受影响
+  // (维持"画到不可达位置、留给用户后续调整"的既有行为，接续/融合场景下这
+  // 条规则同样适用于被续接的旧连线本身，所以下面显式排除 newConnId 自己)，
+  // 但绝不能让这次操作顺手弄坏一条别的、原本合法的连线，所以整体撤销、退回
+  // 操作前的状态。
+  if (brokeExistingValidConnection(beforeSnapshot, ui.network, new Set([newConnId]))) {
     revertLastHistoryStep();
-    state.selectedPipeConnectionId = null;
+    ui.setSelected(null);
   }
   draw();
 }
 
-// Alt+左键点击已有管道任意一格：原地生成管道分流器节点，镜像 createSplitterAtClick。
-function createPipeSplitterAtClick(clientX, clientY) {
-  const pipe = hitTestPipeConnection(clientX, clientY);
-  if (!pipe) return false;
+// Alt+左键点击已有连线任意一格：原地生成分流器节点，并自动进入对应的自由画线
+// 模式、把该节点设为起点 A(具体从哪个空闲输出口出发，留到落地时按最短路挑选)。
+function createSplitterAtClick(ui, clientX, clientY) {
+  const hitConn = ui.hitTestConn(clientX, clientY);
+  if (!hitConn) return false;
   const worldPos = screenToWorld(clientX, clientY);
   const cell = worldToCell(worldPos.x, worldPos.y);
-  const hostConn = pipe.conn;
+  const hostConn = hitConn.conn;
   if (!hostConn.cellPath) return false;
   const hit = cellOrientationsOf(hostConn.cellPath, hostConn.startDir, hostConn.goalDir)
     .find(o => o.cell.col === cell.col && o.cell.row === cell.row);
   if (!hit) return false;
-  const conflict = groundHasBeltConflict(cell.col, cell.row);
+  const conflict = ui.checkGroundConflict ? ui.checkGroundConflict(cell.col, cell.row) : false;
   pushHistory();
   const beforeSnapshot = state.history[state.history.length - 1];
-  const splitter = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, 'pipe-splitter', PIPE_NETWORK);
+  const splitter = splitConnectionAtCell(hostConn, cell, hit.entryDir, hit.exitDir, ui.splitterKind, ui.network);
   if (conflict) splitter.groundConflict = true;
-  // 同上：故意只检查 PIPE_NETWORK，见 finalizePipeConnection 里的注释。
-  if (brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK)) {
+  if (brokeExistingValidConnection(beforeSnapshot, ui.network)) {
     revertLastHistoryStep();
     return false;
   }
-  state.freePipeMode = true;
-  state.freePipeStart = { kind: 'anyOutput', deviceId: splitter.id };
-  state.freePipePreviewPts = null;
-  state.selectedId = null;
-  state.selectedPipeConnectionId = null;
+  ui.enterMode();
+  ui.setStart({ kind: 'anyOutput', deviceId: splitter.id });
+  ui.setPreviewPts(null);
+  ui.setSelected(null);
   updateHintText();
   return true;
 }
@@ -597,11 +445,11 @@ function bindCanvasMouseEvents() {
     // Alt+左键点击已有传送带/管道：无论当前是否已在画线模式中，都优先生成分流器；
     // 管道是视觉上层，优先尝试生成管道分流器，否则退回生成传送带分流器。
     if (e.altKey && e.button === 0) {
-      if (createPipeSplitterAtClick(e.clientX, e.clientY)) {
+      if (createSplitterAtClick(PIPE_UI, e.clientX, e.clientY)) {
         draw();
         return;
       }
-      if (createSplitterAtClick(e.clientX, e.clientY)) {
+      if (createSplitterAtClick(BELT_UI, e.clientX, e.clientY)) {
         draw();
         return;
       }
@@ -610,15 +458,15 @@ function bindCanvasMouseEvents() {
     if (state.freeBeltMode) {
       if (e.button !== 0) return;
       if (!state.freeBeltStart) {
-        const start = resolveFreeBeltStartClick(e.clientX, e.clientY);
+        const start = resolveFreeStartClick(BELT_UI, e.clientX, e.clientY);
         if (start) {
           state.freeBeltStart = start;
-          updateFreeBeltPreview(e.clientX, e.clientY);
+          updateFreePreview(BELT_UI, e.clientX, e.clientY);
           draw();
         }
       } else {
-        const end = resolveFreeBeltEndClick(e.clientX, e.clientY);
-        if (end) finalizeFreeBeltConnection(end, e.clientX, e.clientY);
+        const end = resolveFreeEndClick(BELT_UI, e.clientX, e.clientY);
+        if (end) finalizeFreeConnection(BELT_UI, end, e.clientX, e.clientY);
       }
       return;
     }
@@ -626,15 +474,15 @@ function bindCanvasMouseEvents() {
     if (state.freePipeMode) {
       if (e.button !== 0) return;
       if (!state.freePipeStart) {
-        const start = resolveFreePipeStartClick(e.clientX, e.clientY);
+        const start = resolveFreeStartClick(PIPE_UI, e.clientX, e.clientY);
         if (start) {
           state.freePipeStart = start;
-          updateFreePipePreview(e.clientX, e.clientY);
+          updateFreePreview(PIPE_UI, e.clientX, e.clientY);
           draw();
         }
       } else {
-        const end = resolveFreePipeEndClick(e.clientX, e.clientY);
-        if (end) finalizePipeConnection(end, e.clientX, e.clientY);
+        const end = resolveFreeEndClick(PIPE_UI, e.clientX, e.clientY);
+        if (end) finalizeFreeConnection(PIPE_UI, end, e.clientX, e.clientY);
       }
       return;
     }
@@ -795,13 +643,13 @@ function bindCanvasMouseEvents() {
   window.addEventListener('mousemove', (e) => {
     if (state.freeBeltMode) {
       // 无论是否已选定起点 A，都要实时更新设备本体悬停高亮；已选定 A 时还要更新路径预览
-      updateFreeBeltPreview(e.clientX, e.clientY);
+      updateFreePreview(BELT_UI, e.clientX, e.clientY);
       canvas.style.cursor = 'crosshair';
       draw();
       return;
     }
     if (state.freePipeMode) {
-      updateFreePipePreview(e.clientX, e.clientY);
+      updateFreePreview(PIPE_UI, e.clientX, e.clientY);
       canvas.style.cursor = 'crosshair';
       draw();
       return;
@@ -1050,7 +898,7 @@ function bindCanvasMouseEvents() {
         // 毫不相干，只是新位置挤占/绕开了它寻路需要用到的格子)，不接受这次移动，
         // 整体还原回拖拽前的位置和连线状态——设备重叠仍然只是警示、不阻挡放置，
         // 这里只管"别的连线被顺手拖坏"这一种情况。通用设备拖拽两个网络都要查，
-        // 和 finalizePipeConnection/createPipeSplitterAtClick 那里"故意只查
+        // 和 finalizeFreeConnection/createSplitterAtClick 传 PIPE_UI 时"故意只查
         // PIPE_NETWORK"的地面冲突例外不是一回事。
         if (state.draggingDeviceBeforeSnapshot) {
           const brokeBelt = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, BELT_NETWORK);

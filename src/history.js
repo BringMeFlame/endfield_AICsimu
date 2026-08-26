@@ -83,10 +83,16 @@ export function revertLastHistoryStep() {
 // 置的新线，维持现有的"画出来、留给用户后续调整"行为，不在这里连带撤销)。
 // network 默认为传送带网络；管道分流器/汇流器落在已有传送带地面格上是唯一被
 // 批准可以弄坏传送带而不触发这里的例外(那里改用仅检查管道网络自身，见
-// interactions.js 里 createPipeSplitterAtClick/finalizePipeConnection 的注释)。
-export function brokeExistingValidConnection(beforeSnapshot, network = BELT_NETWORK) {
+// interactions.js 里 createSplitterAtClick/finalizeFreeConnection 传 PIPE_UI 时的注释)。
+// excludeIds：接续悬空端点时(extendDanglingConnection/fuseDanglingConnections)
+// 会复用旧连线的 id 直接原地改写，这条连线本身变 invalid 属于"这次操作的落点
+// 不可达，留给用户调整"，和新建连线画到不可达位置是同一类情况，不该被当成
+// "顺手弄坏了一条别的连线"——调用方把这次操作主动改写的连线 id 传进来排除掉，
+// 这里只关心除它之外、其它连线是否被连带牵连。
+export function brokeExistingValidConnection(beforeSnapshot, network = BELT_NETWORK, excludeIds = null) {
   const beforeConns = network.kind === 'pipe' ? beforeSnapshot.pipeConnections : beforeSnapshot.connections;
   const beforeIds = new Set(beforeConns.map(c => c.id));
   const beforeInvalidIds = new Set(beforeConns.filter(c => c.invalid).map(c => c.id));
-  return network.getConns().some(c => beforeIds.has(c.id) && !beforeInvalidIds.has(c.id) && c.invalid);
+  return network.getConns().some(c =>
+    beforeIds.has(c.id) && !beforeInvalidIds.has(c.id) && c.invalid && !(excludeIds && excludeIds.has(c.id)));
 }

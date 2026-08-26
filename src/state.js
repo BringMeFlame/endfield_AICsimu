@@ -52,6 +52,10 @@ export const state = {
   // freeBeltStart 的 kind: 'port'(绑定某设备已知端口) | 'free'(自由网格) |
   // 'anyOutput'(绑定某设备，但具体走哪个空闲输出口留到落地时按最短路自动挑选，
   // 用于分流器新分支的起点)
+  // 'free' kind 命中某条已有连线悬空的 toCell 时会额外带 continuesConn(该连线
+  // 对象引用)，供 finalizeFreeConnection 落地时把新画的这一笔并入这条连线本身
+  // (同一个 id)，而不是新建一条坐标重合的独立连线；生命周期完全跟随 freeBeltStart
+  // 本身(模式切换/撤销清空 freeBeltStart 时一并失效)，不需要单独的重置点。
   freeBeltStart: null,
   freeBeltPreviewPts: null, // 实时预览折线(世界坐标点数组)，随鼠标移动重算
   freeBeltHoverDeviceId: null, // 悬停在某设备本体(非精确端口)上时高亮该设备

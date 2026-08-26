@@ -410,7 +410,7 @@ export function computePath(conn, network = BELT_NETWORK) {
 
 // 设备布局发生任何变化(拖动/新增/删除)都可能影响其他连线的最佳绕行路径，
 // 因此统一重新计算全部连线，而不仅是与该设备直接相连的连线。
-function recomputeAllForNetwork(network) {
+export function recomputeAllForNetwork(network) {
   for (const c of network.getConns()) {
     const res = computePath(c, network);
     c.points = res.points;
@@ -435,15 +435,68 @@ export function recomputeAllFlows() {
 // 用于自动汇流(终点落在已有传送带上)和 Alt+点击生成分流器。
 // 判断 (col,row) 这一格是否正好是某条连线"悬空的自由端点"(fromCell 未接设备的
 // 源端，或 toCell 未接设备的目的端)——这类连线通常是画到空白格子的终点、或者
-// 设备被删除后残留下来的悬空段。用于在自由画线模式选起点时，允许直接从这个
-// 悬空端点继续延伸出新路径，而不是被"点在已有连线上"的一般规则挡住(那条规则
-// 是为了不让用户误在线路中段起手新线，只保留 Alt+点击生成分流器这一条路)。
-export function findDanglingFreeEndAtCell(col, row, network = BELT_NETWORK) {
+// 设备被删除后残留下来的悬空段。返回具体是哪条连线、哪一端(而不只是布尔值)，
+// 用于自由画线模式续接悬空端点时，把新画的一笔并入这条连线本身(见下面
+// extendDanglingConnection/fuseDanglingConnections)，而不是新建一条只是坐标
+// 凑巧重合的独立连线。一个格子理论上最多同时是一条连线的悬空端点。
+export function findDanglingConnAtCell(col, row, network = BELT_NETWORK) {
   for (const c of network.getConns()) {
-    if (c.fromDeviceId === null && c.fromCell && c.fromCell.col === col && c.fromCell.row === row) return true;
-    if (c.toDeviceId === null && c.toCell && c.toCell.col === col && c.toCell.row === row) return true;
+    if (c.fromDeviceId === null && c.fromCell && c.fromCell.col === col && c.fromCell.row === row) return { conn: c, end: 'from' };
+    if (c.toDeviceId === null && c.toCell && c.toCell.col === col && c.toCell.row === row) return { conn: c, end: 'to' };
   }
-  return false;
+  return null;
+}
+
+// 把新画的一笔"接续"进 danglingConn 本身(复用同一个 id)，而不是新建一条：
+//  - end==='to'：danglingConn 已有真实源头、下游还悬空，把下游从悬空自由格改接
+//    到 farEndpoint(形如 { deviceId, port, cell }，三选一)，并把旧的悬空格坐标
+//    追加进 waypoints 末尾。
+//  - end==='from'：镜像处理，改接上游，旧悬空格坐标插进 waypoints 最前面。
+// 追加旧悬空格为途经点是关键一步：不加的话 computePath 会对"原起点→新终点"
+// 整体重新跑一次 A*，可能完全绕开用户已经画好的那一段，等于把第一段的走线
+// 抹掉重画——和 computePath 里"不能对拼接路径整体去重"是同一类问题，这里同样
+// 靠 waypoints 强制路径途经旧端点来解决，而不是事后处理。
+// 调用方需已 pushHistory()，本函数自身不重复调用。
+export function extendDanglingConnection(danglingConn, end, farEndpoint, network = BELT_NETWORK) {
+  if (end === 'to') {
+    const joinCell = danglingConn.toCell;
+    danglingConn.toDeviceId = farEndpoint.deviceId ?? null;
+    danglingConn.toPort = farEndpoint.port ?? null;
+    danglingConn.toCell = farEndpoint.cell ?? null;
+    danglingConn.waypoints = [...danglingConn.waypoints, joinCell];
+  } else {
+    const joinCell = danglingConn.fromCell;
+    danglingConn.fromDeviceId = farEndpoint.deviceId ?? null;
+    danglingConn.fromPort = farEndpoint.port ?? null;
+    danglingConn.fromCell = farEndpoint.cell ?? null;
+    danglingConn.waypoints = [joinCell, ...danglingConn.waypoints];
+  }
+  const res = computePath(danglingConn, network);
+  danglingConn.points = res.points;
+  danglingConn.cellPath = res.cellPath;
+  danglingConn.startDir = res.startDir;
+  danglingConn.goalDir = res.goalDir;
+  danglingConn.invalid = res.invalid;
+}
+
+// 三段融合：新画的一笔起点精确落在 connA 悬空的 toCell(情况 A)、终点又精确落在
+// 另一条连线 connB 悬空的 fromCell(情况 B)时，把 connB 整个吸收进 connA(复用
+// connA 的 id)，而不是各自延伸成两个坐标重合但仍然独立的对象。connA !== connB
+// 由调用方保证(同一条连线自己首尾相接是自环，没有物理意义，调用方应按普通
+// 新建连线处理，不要调用这个函数)。
+export function fuseDanglingConnections(connA, connB, network = BELT_NETWORK) {
+  const joinA = connA.toCell, joinB = connB.fromCell;
+  connA.toDeviceId = connB.toDeviceId;
+  connA.toPort = connB.toPort;
+  connA.toCell = connB.toCell;
+  connA.waypoints = [...connA.waypoints, joinA, joinB, ...connB.waypoints];
+  network.setConns(network.getConns().filter(c => c.id !== connB.id));
+  const res = computePath(connA, network);
+  connA.points = res.points;
+  connA.cellPath = res.cellPath;
+  connA.startDir = res.startDir;
+  connA.goalDir = res.goalDir;
+  connA.invalid = res.invalid;
 }
 
 export function findConnectionAtCell(col, row, network = BELT_NETWORK) {
