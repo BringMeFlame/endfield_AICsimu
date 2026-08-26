@@ -1,5 +1,5 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT } from './constants.js';
 import { state, ctx } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
@@ -179,6 +179,21 @@ function buildScreenPath2D(screenPoints) {
   return path;
 }
 
+// 传送带/管道折线专用：内部拐点用 arcTo 插入一个固定小半径的圆弧，两端仍是直
+// 段(moveTo/lineTo)，让转角"横平竖直"但不是绝对直角。和 roundRectPathAt 同样
+// 的 arcTo 手法，只是作用在任意折线的每个拐点而不是矩形四角。半径固定为
+// BELT_CORNER_RADIUS，不随线宽缩放——本项目路径顶点间距最小是一个 GRID_SIZE
+// (50px)，远大于这个小半径，不会出现半径大于半段长度导致的异常拐弯。
+function buildRoundedScreenPath2D(screenPoints) {
+  const path = new Path2D();
+  path.moveTo(screenPoints[0].x, screenPoints[0].y);
+  for (let i = 1; i < screenPoints.length - 1; i++) {
+    path.arcTo(screenPoints[i].x, screenPoints[i].y, screenPoints[i + 1].x, screenPoints[i + 1].y, BELT_CORNER_RADIUS);
+  }
+  path.lineTo(screenPoints[screenPoints.length - 1].x, screenPoints[screenPoints.length - 1].y);
+  return path;
+}
+
 // 沿整条折线按固定间距(FLOW_ARROW_STEP)绘制小箭头表示流向，拐弯处也保持等
 // 间距(用 carry 累计跨线段的剩余距离)。极简风格下这是传送带/管道唯一的
 // 方向指示手段，替代旧版的辊轴刻线+单段箭头设计。
@@ -214,7 +229,7 @@ function drawFlowArrowsAlongPath(screenPoints, color, size) {
 function drawConnectionPath(c, opts) {
   if (!c.points || c.points.length < 2) return;
   const screenPoints = pathToScreen(c.points);
-  const path = buildScreenPath2D(screenPoints);
+  const path = buildRoundedScreenPath2D(screenPoints);
   const isPipe = opts.network === 'pipe';
   const width = isPipe ? PIPE_WIDTH : BELT_WIDTH;
 
@@ -237,7 +252,7 @@ function drawConnectionPath(c, opts) {
 
   if (!c.invalid) {
     const arrowColor = isPipe ? 'rgba(224, 247, 255, 0.95)' : 'rgba(93, 64, 4, 0.85)';
-    const arrowSize = isPipe ? 4 : 7;
+    const arrowSize = isPipe ? 4 : 6;
     drawFlowArrowsAlongPath(screenPoints, arrowColor, arrowSize);
   }
 }

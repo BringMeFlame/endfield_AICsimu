@@ -13,8 +13,13 @@ export const DIR_VECT = [{ dx: 1, dy: 0 }, { dx: 0, dy: 1 }, { dx: -1, dy: 0 }, 
 export const ALL_DIRS = [DIR_E, DIR_S, DIR_W, DIR_N];
 
 // ---- 传送带/管道渲染参数(极简风：半透明色带/线条 + 方向箭头，无辊轴/铰链细节) ----
-export const BELT_WIDTH = Math.round(GRID_SIZE * 0.8); // 传送带整体宽度，约占一格宽度的80%
+export const BELT_WIDTH = Math.round(GRID_SIZE * 0.6); // 传送带整体宽度，约占一格宽度的60%
 export const PIPE_WIDTH = 8;                            // 管道线条宽度，明显细于传送带，便于两者重叠时透视
+// 折线转角的圆角半径，固定小像素值、不随 BELT_WIDTH/GRID_SIZE 缩放：如果直接用
+// ctx.lineJoin='round'，圆角半径恒等于 lineWidth/2，会让转角视觉体积和带宽绑死
+// (带宽越宽转角越是一个大圆弧)，这里改成手动在折线拐点处插入小半径圆弧(见
+// render.js 的 buildRoundedScreenPath2D)，让转角始终"横平竖直"但不是绝对直角。
+export const BELT_CORNER_RADIUS = 6;
 export const FLOW_ARROW_STEP = 30;                      // 方向箭头沿路径的间距(屏幕像素)
 
 // ---- 撤销历史 ----
