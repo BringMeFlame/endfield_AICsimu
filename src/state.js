@@ -2,8 +2,8 @@
 export const canvas = document.getElementById('canvas');
 export const ctx = canvas.getContext('2d');
 export const toolbar = document.getElementById('toolbar');
-export const crusherIcon = document.getElementById('crusher-icon');
-export const reactorIcon = document.getElementById('reactor-icon');
+export const toolbarTabs = document.getElementById('toolbar-tabs');
+export const toolbarIcons = document.getElementById('toolbar-icons');
 export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
 
@@ -107,5 +107,13 @@ export const state = {
   // ---- 从工具栏拖拽生成新设备的状态 ----
   spawning: false,
   spawnPreview: null, // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
-  spawningTemplateKey: null // 'crusher'|'reactor'：当前正在拖拽生成的是 SPAWN_TEMPLATES 里哪一个模板
+  spawningTemplateKey: null, // 当前正在拖拽生成的是 SPAWN_TEMPLATES 里哪一个模板(key)
+
+  // ---- 工具栏当前选中的分类标签页(纯 UI 导航状态) ----
+  // 取值是 facilities.js 分类中文名之一，由 interactions.js 的 buildToolbarUI()
+  // 在生成标签页时初始化为第一个分类。这是持久化的 UI 选择状态(和 scale/
+  // offsetX/offsetY 摄像机状态同类)，不是"进行到一半会被打断"的交互态，
+  // 所以不需要在 undo()/E 键切换自由传送带模式/鼠标收尾逻辑这三处重置——
+  // 撤销画布数据、切换画线模式都不应该把用户正在看的工具栏标签页跳走。
+  activeToolbarCategory: null
 };

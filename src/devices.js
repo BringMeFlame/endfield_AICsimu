@@ -2,16 +2,30 @@
 import { GRID_SIZE, PORT_COUNT, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, REACTOR_PORT_LAYOUT, REACTOR_BASE_ROLES } from './constants.js';
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
+import { FACILITIES } from './data/facilities.js';
 
 // ---- 工具栏拖拽生成新设备的模板注册表 ----
-// key 对应工具栏图标/state.spawningTemplateKey；kind: undefined 的粉碎机和历史
-// 行为完全一致(devices 里 kind 字段本来就允许缺省，JSON 克隆也会一样丢弃 undefined)。
-// 所有设备统一白底黑边(工业风)，不再用颜色区分设备种类，靠标签文字 + 占地
-// 大小分辨(见 render.js drawDeviceRect 的字体规则)。
-export const SPAWN_TEMPLATES = [
-  { key: 'crusher', kind: undefined, w: 3, h: 3, color: '#ffffff', borderColor: '#111111', label: '粉碎机' },
-  { key: 'reactor', kind: 'reactor', w: 5, h: 5, color: '#ffffff', borderColor: '#111111', label: '反应池' },
-];
+// key 对应工具栏图标/state.spawningTemplateKey。所有设备统一白底黑边(工业风)，
+// 不再用颜色区分设备种类，靠标签文字 + 占地大小分辨(见 render.js drawDeviceRect
+// 的字体规则)。
+// 由 FACILITIES(src/data/facilities.js 的真实基建数据)在模块加载时计算生成，
+// 不再手写——这是一层"薄适配层"，只把 facilities.js 的 footprint/ports 字段
+// 换成工具栏/渲染需要的 w/h/color/kind 等字段，真实数值自始至终只在
+// facilities.js 里维护一份，这里不允许出现第二份手抄的设备数值表。
+// category 是 facilities.js 的中文分类名，工具栏据此把图标分到对应标签页。
+export const SPAWN_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list]) =>
+  list.map(f => ({
+    key: f.id,
+    kind: 'facility',
+    category,
+    w: f.footprint.w,
+    h: f.footprint.h,
+    color: '#ffffff',
+    borderColor: '#111111',
+    label: f.name,
+    ports: f.ports
+  }))
+);
 
 export function getDeviceRectWorld(gridX, gridY, w, h) {
   return { x: gridX * GRID_SIZE, y: gridY * GRID_SIZE, w: w * GRID_SIZE, h: h * GRID_SIZE };
@@ -185,10 +199,81 @@ function reactorDevicePorts(dev, pos) {
   return { inputs: beltInputs.concat(pipeInputs), outputs: beltOutputs.concat(pipeOutputs) };
 }
 
+// ---- 真实基建设备(facilities.js)的显式端口 ----
+
+// facilities.js 里 dir 是字符串(端口朝外的朝向)，转成本项目的 DIR_E/S/W/N。
+const FACILITY_DIR_TO_DIR = { up: DIR_N, right: DIR_E, down: DIR_S, left: DIR_W };
+
+// facilities.js 里 type 是 'item_input'/'item_output'/'fluid_input'/'fluid_output'，
+// 前半段决定 portKind(item→belt, fluid→pipe)，后半段就是 io 本身，直接复用。
+// 已对 facilities.js 全文核实过，231 个端口的 type 只有这 4 种取值，没有别的变体。
+function parsePortType(type) {
+  const [kindWord, ioWord] = type.split('_');
+  return { portKind: kindWord === 'item' ? 'belt' : 'pipe', io: ioWord };
+}
+
+// 把 facilities.js 里"设备未旋转时"的格子坐标(col,row)和朝向 dir，绕设备中心
+// 顺时针旋转 rot 个 90°，得到当前朝向下的格子坐标和朝向。baseW/baseH 是旋转前
+// (rot=0 时)的宽高——footprint 不是正方形时，旋转奇数次会让宽高互换，所以
+// 旋转前后的坐标系维度不一样，必须先知道原始维度才能算对。
+// 方向的旋转就是简单地 (dir + rot) % 4，和 DIR_E/S/W/N 的顺时针编号、以及
+// render.js 里 dir*Math.PI/2 的旋转方向完全一致。
+function rotateFacilityPort(col, row, dir, baseW, baseH, rot) {
+  switch (rot) {
+    case 1: return { col: baseH - 1 - row, row: col, dir: (dir + 1) % 4 };
+    case 2: return { col: baseW - 1 - col, row: baseH - 1 - row, dir: (dir + 2) % 4 };
+    case 3: return { col: row, row: baseW - 1 - col, dir: (dir + 3) % 4 };
+    default: return { col, row, dir };
+  }
+}
+
+// 显式端口坐标转世界坐标，公式和 singleCellPort/edgePorts 完全一致(格子中心
+// 沿朝外方向推半格到边界)，只是格子坐标是数据里显式给的，不是遍历一整条边
+// 推出来的；cellCol/cellRow 同理是"沿 dir 方向再往外一格"，和 edgePorts 的
+// outsideCol/outsideRow 是同一个推导(可以验证：col=0,dir=DIR_W 时退化成
+// leftX/pos.gridX-1，和 edgePorts 的 W 边分支完全一样)。
+function facilityCellPort(pos, col, row, dir, index, portKind) {
+  const cx = (pos.gridX + col + 0.5) * GRID_SIZE;
+  const cy = (pos.gridY + row + 0.5) * GRID_SIZE;
+  const vec = DIR_VECT[dir];
+  return {
+    index,
+    x: cx + vec.dx * (GRID_SIZE / 2),
+    y: cy + vec.dy * (GRID_SIZE / 2),
+    cellCol: pos.gridX + col + vec.dx,
+    cellRow: pos.gridY + row + vec.dy,
+    dir,
+    portKind
+  };
+}
+
+// facilities.js 真实设备的端口计算：dev.ports 是落地时从模板原样拷贝下来的
+// facilities.js 端口数组(未旋转坐标系)，这里按 dev.rot 转成当前朝向下的世界坐标。
+// index 分别在 inputs/outputs 数组内部从 0 计数(和其它 *DevicePorts 函数的
+// 约定一致，见 reactorDevicePorts 顶部注释)，不是 dev.ports 里的原始下标。
+function facilityDevicePorts(dev, pos) {
+  const rot = flowDirOf(dev);
+  // dev.w/dev.h 是"当前(已旋转)"的占地；rot 为奇数时它们已经是互换过的，
+  // 反推回旋转前的原始宽高才能喂给 rotateFacilityPort。
+  const baseW = rot % 2 === 0 ? dev.w : dev.h;
+  const baseH = rot % 2 === 0 ? dev.h : dev.w;
+  const inputs = [];
+  const outputs = [];
+  for (const p of dev.ports || []) {
+    const { portKind, io } = parsePortType(p.type);
+    const baseDir = FACILITY_DIR_TO_DIR[p.dir];
+    const rotated = rotateFacilityPort(p.grid[0], p.grid[1], baseDir, baseW, baseH, rot);
+    const list = io === 'input' ? inputs : outputs;
+    list.push(facilityCellPort(pos, rotated.col, rotated.row, rotated.dir, list.length, portKind));
+  }
+  return { inputs, outputs };
+}
+
 export function getDevicePorts(dev, pos) {
   if (dev.kind === 'merger' || dev.kind === 'splitter') return nodeDevicePorts(dev, pos, 'belt');
   if (dev.kind === 'pipe-merger' || dev.kind === 'pipe-splitter') return nodeDevicePorts(dev, pos, 'pipe');
   if (dev.kind === 'reactor') return reactorDevicePorts(dev, pos);
+  if (dev.kind === 'facility') return facilityDevicePorts(dev, pos);
   const flowDir = flowDirOf(dev);
   return {
     inputs: edgePorts(dev, pos, oppositeDir(flowDir), flowDir).map(p => ({ ...p, portKind: 'belt' })),

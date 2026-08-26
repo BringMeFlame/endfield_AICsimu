@@ -41,7 +41,7 @@ canvas {
   position: fixed;
   top: 0;
   left: 0;
-  width: 84px;
+  width: 210px;
   height: 100vh;
   background: rgba(255, 255, 255, 0.96);
   border-right: 1px solid rgba(0, 0, 0, 0.12);
@@ -59,6 +59,44 @@ canvas {
   font-family: system-ui, sans-serif;
   font-size: 11px;
   margin-bottom: 4px;
+}
+/* 分类标签栏：横向换行排布，选中态用黑底白字强调(工具栏导航专用视觉，
+   不借用 canvas 上"选中"的黄色语义，避免两种"选中"混在一起) */
+#toolbar-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+}
+.toolbar-tab {
+  padding: 4px 8px;
+  background: #ffffff;
+  border: 2px solid #111;
+  border-radius: 4px;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+  color: #111;
+  cursor: pointer;
+}
+.toolbar-tab.active {
+  background: #111;
+  color: #fff;
+}
+/* 当前分类的设备图标：可换行网格，超出高度时滚动，避免设备数量多时
+   撑爆整个左侧栏 */
+#toolbar-icons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: flex-start;
+  gap: 10px;
+  padding: 4px 10px;
+  overflow-y: auto;
+  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
 }
 .device-icon {
   width: 56px;

@@ -1,6 +1,6 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
 import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE } from './constants.js';
-import { state, canvas, toolbar, crusherIcon, reactorIcon, ghostIcon, hintEl } from './state.js';
+import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
   hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts,
@@ -1034,12 +1034,28 @@ function bindKeyboardEvents() {
       if (state.selectedId === null) return;
       const dev = state.devices.find(d => d.id === state.selectedId);
       // 汇流器/分流器(传送带版和管道版)的朝向由被切入的原连线决定，不支持手动旋转；
-      // 反应池和粉碎机一样允许旋转，四组端口作为刚体整体随旋转角度转动。
-      if (!dev || (dev.kind && dev.kind !== 'crusher' && dev.kind !== 'reactor')) return;
+      // 反应池、粉碎机和真实基建设备(facility)都允许旋转，端口作为刚体整体随
+      // 旋转角度转动。
+      if (!dev || (dev.kind && dev.kind !== 'crusher' && dev.kind !== 'reactor' && dev.kind !== 'facility')) return;
       e.preventDefault();
       pushHistory();
+      const beforeSnapshot = state.history[state.history.length - 1];
       dev.rot = (flowDirOf(dev) + 1) % 4;
+      // facility 设备大多不是正方形(拆解机6x4、协议核心9x9等)，旋转是真的绕
+      // 中心转外形，宽高会互换；粉碎机/反应池是正方形，w/h 互换后数值不变，
+      // 这里不用按 kind 分支——统一处理更简单，也不会影响原有两种设备的行为。
+      const tmp = dev.w;
+      dev.w = dev.h;
+      dev.h = tmp;
       recomputeAllFlows();
+      // 旋转会改变非正方形 facility 设备实际占用的格子，理论上可能像"设备拖拽/
+      // 生成新设备"一样顺手压中另一条操作前合法的连线，按 CLAUDE.md 的规矩这里
+      // 也要做同样的安全网检查，坏了就整体撤销这次旋转。
+      const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
+      const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
+      if (brokeBelt || brokePipe) {
+        revertLastHistoryStep();
+      }
       draw();
       return;
     }
@@ -1128,21 +1144,66 @@ function updateSpawnPreview(clientX, clientY) {
   };
 }
 
-function bindToolbarSpawnEvents() {
-  const icons = [{ el: crusherIcon, key: 'crusher' }, { el: reactorIcon, key: 'reactor' }];
+// 按 SPAWN_TEMPLATES 的 category 生成标签栏(去重、保留 FACILITIES 的分类顺序)
+// 和每个分类的设备图标，一次性全部造好挂进 DOM，用 CSS display 按当前选中的
+// state.activeToolbarCategory 切换显示——这样只需要绑定一次事件(见下面的事件
+// 委托)，不用每次切换标签页重新生成/重新绑定。
+function buildToolbarUI() {
+  const categories = [...new Set(SPAWN_TEMPLATES.map(t => t.category))];
+  state.activeToolbarCategory = categories[0];
 
-  for (const { el, key } of icons) {
-    el.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      state.spawning = true;
-      state.spawningTemplateKey = key;
-      ghostIcon.style.display = 'flex';
-      ghostIcon.textContent = SPAWN_TEMPLATES.find(t => t.key === key).label;
-      ghostIcon.style.left = (e.clientX - 28) + 'px';
-      ghostIcon.style.top = (e.clientY - 28) + 'px';
-      updateSpawnPreview(e.clientX, e.clientY);
-    });
+  for (const category of categories) {
+    const tab = document.createElement('div');
+    tab.className = 'toolbar-tab';
+    tab.textContent = category;
+    tab.dataset.category = category;
+    toolbarTabs.appendChild(tab);
   }
+  for (const template of SPAWN_TEMPLATES) {
+    const icon = document.createElement('div');
+    icon.className = 'device-icon';
+    icon.textContent = template.label;
+    icon.dataset.key = template.key;
+    icon.dataset.category = template.category;
+    toolbarIcons.appendChild(icon);
+  }
+  refreshToolbarActiveTab();
+}
+
+function refreshToolbarActiveTab() {
+  for (const tab of toolbarTabs.children) {
+    tab.classList.toggle('active', tab.dataset.category === state.activeToolbarCategory);
+  }
+  for (const icon of toolbarIcons.children) {
+    icon.style.display = icon.dataset.category === state.activeToolbarCategory ? 'flex' : 'none';
+  }
+}
+
+function bindToolbarSpawnEvents() {
+  buildToolbarUI();
+
+  toolbarTabs.addEventListener('click', (e) => {
+    const tab = e.target.closest('.toolbar-tab');
+    if (!tab) return;
+    state.activeToolbarCategory = tab.dataset.category;
+    refreshToolbarActiveTab();
+  });
+
+  // 事件委托：图标是动态生成的，数量随 FACILITIES 增减也不用改这里，一个
+  // mousedown 监听器管全部图标，按被点中图标的 dataset.key 查 SPAWN_TEMPLATES。
+  toolbarIcons.addEventListener('mousedown', (e) => {
+    const icon = e.target.closest('.device-icon');
+    if (!icon) return;
+    e.preventDefault();
+    const key = icon.dataset.key;
+    state.spawning = true;
+    state.spawningTemplateKey = key;
+    ghostIcon.style.display = 'flex';
+    ghostIcon.textContent = SPAWN_TEMPLATES.find(t => t.key === key).label;
+    ghostIcon.style.left = (e.clientX - 28) + 'px';
+    ghostIcon.style.top = (e.clientY - 28) + 'px';
+    updateSpawnPreview(e.clientX, e.clientY);
+  });
 
   window.addEventListener('mousemove', (e) => {
     if (!state.spawning) return;
@@ -1171,7 +1232,13 @@ function bindToolbarSpawnEvents() {
         kind: template.kind,
         color: template.color,
         borderColor: template.borderColor,
-        label: template.label
+        label: template.label,
+        // facility 设备专属：facilityId 标记它是 facilities.js 里哪个设备种类
+        // (和 dev.id 这个"实例编号"是两回事)；ports 是该种类的原始端口数据，
+        // 落地时整体拷贝一份到实例上，供 getDevicePorts() 的 facilityDevicePorts
+        // 分支使用，不用在渲染/寻路时反过来查 FACILITIES——这样 cloneCanvasState()
+        // 的无差别深拷贝天然就能把它带过 Ctrl+Z 撤销栈，不用额外处理。
+        ...(template.kind === 'facility' ? { facilityId: template.key, ports: template.ports } : {})
       };
       state.devices.push(newDevice);
       state.selectedId = newDevice.id;
