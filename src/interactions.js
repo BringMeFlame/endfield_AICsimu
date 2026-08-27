@@ -1,9 +1,9 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
-import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE } from './constants.js';
+import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECT, BOX_SELECT_LONG_PRESS_MS } from './constants.js';
 import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
-  hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts,
+  hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts, getDeviceRectWorld, rectsOverlapPx,
   isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed,
   flowDirOf, SPAWN_TEMPLATES
 } from './devices.js';
@@ -14,15 +14,20 @@ import {
   waypointInsertIndex, splitConnectionAtCell, cellOrientationsOf, findConnectionAtCell,
   findDanglingConnAtCell, extendDanglingConnection, fuseDanglingConnections,
   pickBestPort, pickNearestPortByDistance, resolveConnEndpoint, clearWaypointsForDevice,
+  boxSelectHitConnections, connectionsTouchingDevices, detachDeviceFromConnections,
   BELT_NETWORK, PIPE_NETWORK
 } from './pathfinding.js';
 import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 
 export function updateHintText() {
-  hintEl.textContent = state.freeBeltMode ? HINT_BELT : state.freePipeMode ? HINT_PIPE : HINT_NORMAL;
+  hintEl.textContent = state.freeBeltMode ? HINT_BELT
+    : state.freePipeMode ? HINT_PIPE
+    : state.boxSelectMode ? HINT_BOX_SELECT
+    : HINT_NORMAL;
   hintEl.classList.toggle('belt-mode', state.freeBeltMode);
   hintEl.classList.toggle('pipe-mode', state.freePipeMode);
+  hintEl.classList.toggle('box-select-mode', state.boxSelectMode);
 }
 
 // 光标旁的轻量提示，用于端口拉线规则被拒绝时的即时反馈，一段时间后自动消失。
@@ -453,11 +458,476 @@ function resolveConduitWaypointHitAt(clientX, clientY) {
   return null;
 }
 
+// ---- 框选批量操作模式(X 键切换)：多选/批量移动/批量旋转/批量删除/复制粘贴 ----
+// 与 freeBeltMode/freePipeMode 同级的独占工具，三者互斥。核心状态机：鼠标按下
+// 时先记一个"候选态"(boxSelectPointerDown)，具体是"点击切换选中"、"长按启动
+// 批量拖动"还是"拖拽退化成框选矩形"三选一，要等后续 mousemove 越过阈值/计时器
+// 触发/mouseup 才能确定(见 handleBoxSelectMouseDown 及下面 mousemove 里的分支)。
+
+// 撤销/退出框选模式共用的重置块：清空所有"进行中"的框选交互态。boxSelectMode
+// 本身和 clipboard 不在此列(前者是模式开关、后者是持久剪贴板数据，同 E/Q 键
+// 的 freeBeltMode/history.js 的 undo() 对这两类状态的处理方式一致)。仅本文件内
+// 使用(history.js 的 undo() 按现有风格独立内联自己的一份，不共享)。
+function resetBoxSelectTransientState() {
+  state.boxSelectedDeviceIds = new Set();
+  state.boxSelectedConnectionIds = new Set();
+  state.boxSelectedPipeConnectionIds = new Set();
+  state.boxSelectPointerDown = null;
+  if (state.boxSelectLongPressTimer) clearTimeout(state.boxSelectLongPressTimer);
+  state.boxSelectLongPressTimer = null;
+  state.boxSelectLongPressToken++;
+  state.boxSelectMarquee = null;
+  state.boxDragBeforeSnapshot = null;
+  state.boxDragOrigin = null;
+  state.boxDragConnOrigin = null;
+  state.boxDragDeltaCol = 0;
+  state.boxDragDeltaRow = 0;
+  state.pastePending = false;
+  state.pastePreview = null;
+}
+
+// E/Q 键入口互相强制关闭对方进行中状态的那个重置块，X 键入口需要同样强制关闭
+// 这两个自由画线模式——内联复制一份(和 E/Q 入口目前互相内联对方重置块的写法
+// 保持一致，不引入新的跨用途共享抽象)。
+function exitFreeBeltAndPipeModes() {
+  state.freeBeltMode = false;
+  state.freeBeltStart = null;
+  state.freeBeltPreviewPts = null;
+  state.freeBeltHoverDeviceId = null;
+  state.freePipeMode = false;
+  state.freePipeStart = null;
+  state.freePipePreviewPts = null;
+  state.freePipeHoverDeviceId = null;
+  state.draggingWaypoint = null;
+  state.pendingWaypointCreate = null;
+  state.draggingPipeWaypoint = null;
+  state.pendingPipeWaypointCreate = null;
+  state.draggingDeviceId = null;
+  state.draggingDeviceBeforeSnapshot = null;
+  state.endpointDrag = null;
+  state.pipeEndpointDrag = null;
+  state.isPanning = false;
+  state.lastConduitClickCell = null;
+}
+
+function toggleInSet(set, id) {
+  if (set.has(id)) set.delete(id); else set.add(id);
+}
+
+function boxSelectedConnIdsForNetwork(network) {
+  return network === BELT_NETWORK ? state.boxSelectedConnectionIds : state.boxSelectedPipeConnectionIds;
+}
+
+// 框选批量移动/旋转时"跟着一起变"的连线集合：端点绑定在被选中设备上的连线
+// (设备一动，它自然要跟着走)，并上被显式框选中的连线本身(哪怕它两端都没绑
+// 定在被选中的设备上，用户直接选中了这条线，长按它也能单独拖动/随旋转变换)。
+// 这个集合同时也是 brokeExistingValidConnection 的 excludeIds：这次操作导致
+// 它们变化是预期之内的直接后果，不是牵连到了别的无关连线。
+function computeBoxDragAffectedConnIds(network) {
+  const merged = connectionsTouchingDevices(state.boxSelectedDeviceIds, network);
+  for (const id of boxSelectedConnIdsForNetwork(network)) merged.add(id);
+  return merged;
+}
+
+// ---- 鼠标按下候选态：点击 / 长按批量拖动 / 退化成框选矩形 三选一 ----
+
+function handleBoxSelectMouseDown(clientX, clientY) {
+  const worldPos = screenToWorld(clientX, clientY);
+  const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+  let hitKind = null, hitId = null, wasSelected = false;
+  if (hitDev) {
+    hitKind = 'device';
+    hitId = hitDev.id;
+    wasSelected = state.boxSelectedDeviceIds.has(hitId);
+  } else {
+    const connResolved = resolveConduitHitAt(clientX, clientY);
+    if (connResolved) {
+      hitKind = connResolved.network;
+      hitId = connResolved.hit.conn.id;
+      wasSelected = hitKind === 'pipe'
+        ? state.boxSelectedPipeConnectionIds.has(hitId)
+        : state.boxSelectedConnectionIds.has(hitId);
+    }
+  }
+  state.boxSelectPointerDown = {
+    downX: clientX, downY: clientY,
+    downWorldX: worldPos.x, downWorldY: worldPos.y,
+    hitKind, hitId, wasSelected
+  };
+  if (wasSelected) {
+    const token = ++state.boxSelectLongPressToken;
+    state.boxSelectLongPressTimer = setTimeout(() => onBoxSelectLongPressFire(token), BOX_SELECT_LONG_PRESS_MS);
+  }
+}
+
+function onBoxSelectLongPressFire(token) {
+  if (token !== state.boxSelectLongPressToken) return; // 已被 mouseup/移动阈值取消，过期回调
+  if (!state.boxSelectPointerDown) return;
+  startBoxSelectDrag();
+  draw();
+}
+
+function resolveBoxSelectClickToggle() {
+  const down = state.boxSelectPointerDown;
+  if (!down) return;
+  if (down.hitKind === null) {
+    state.boxSelectedDeviceIds = new Set();
+    state.boxSelectedConnectionIds = new Set();
+    state.boxSelectedPipeConnectionIds = new Set();
+  } else if (down.hitKind === 'device') {
+    toggleInSet(state.boxSelectedDeviceIds, down.hitId);
+  } else if (down.hitKind === 'belt') {
+    toggleInSet(state.boxSelectedConnectionIds, down.hitId);
+  } else if (down.hitKind === 'pipe') {
+    toggleInSet(state.boxSelectedPipeConnectionIds, down.hitId);
+  }
+  if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
+  state.boxSelectPointerDown = null;
+}
+
+// ---- 框选矩形拖拽 ----
+
+function updateBoxSelectMarquee(clientX, clientY) {
+  if (!state.boxSelectMarquee) return;
+  const worldPos = screenToWorld(clientX, clientY);
+  state.boxSelectMarquee.curWX = worldPos.x;
+  state.boxSelectMarquee.curWY = worldPos.y;
+}
+
+function commitBoxSelectMarquee() {
+  const { startWX, startWY, curWX, curWY } = state.boxSelectMarquee;
+  const rect = {
+    x: Math.min(startWX, curWX), y: Math.min(startWY, curWY),
+    w: Math.abs(curWX - startWX), h: Math.abs(curWY - startWY)
+  };
+  const deviceIds = new Set();
+  for (const dev of state.devices) {
+    const pos = effectiveGridPos(dev);
+    const devRect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
+    if (rectsOverlapPx(rect, devRect)) deviceIds.add(dev.id);
+  }
+  // 框选矩形整体替换(不是叠加)当前选中集合——单击才是增/删切换。
+  state.boxSelectedDeviceIds = deviceIds;
+  state.boxSelectedConnectionIds = boxSelectHitConnections(rect, BELT_NETWORK);
+  state.boxSelectedPipeConnectionIds = boxSelectHitConnections(rect, PIPE_NETWORK);
+  state.boxSelectMarquee = null;
+}
+
+// ---- 长按批量拖动：镜像单设备拖拽的安全网套路，但作用于整个选区 ----
+
+function startBoxSelectDrag() {
+  pushHistory();
+  state.boxDragBeforeSnapshot = state.history[state.history.length - 1];
+
+  state.boxDragOrigin = new Map();
+  for (const id of state.boxSelectedDeviceIds) {
+    const dev = state.devices.find(d => d.id === id);
+    if (dev) state.boxDragOrigin.set(id, { gridX: dev.gridX, gridY: dev.gridY });
+  }
+
+  state.boxDragConnOrigin = new Map();
+  for (const network of [BELT_NETWORK, PIPE_NETWORK]) {
+    for (const connId of computeBoxDragAffectedConnIds(network)) {
+      const conn = network.getConns().find(c => c.id === connId);
+      if (!conn) continue;
+      state.boxDragConnOrigin.set(connId, {
+        network: network.kind,
+        fromCell: conn.fromCell ? { ...conn.fromCell } : null,
+        toCell: conn.toCell ? { ...conn.toCell } : null,
+        waypoints: (conn.waypoints || []).map(wp => ({ ...wp }))
+      });
+    }
+  }
+
+  state.boxDragDeltaCol = 0;
+  state.boxDragDeltaRow = 0;
+  // 保留 boxSelectPointerDown(不清空)：它的 downWorldX/downWorldY 是这次批量拖动
+  // 的位移基准点，updateBoxSelectDrag 每帧据此算整体格偏移；mousemove 的分支
+  // 顺序已经把 boxDragOrigin 检查排在 boxSelectPointerDown 前面，不会互相打架。
+  if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
+  canvas.style.cursor = 'grabbing';
+}
+
+function updateBoxSelectDrag(clientX, clientY) {
+  if (!state.boxDragOrigin || !state.boxSelectPointerDown) return;
+  const worldPos = screenToWorld(clientX, clientY);
+  const rawDX = worldPos.x - state.boxSelectPointerDown.downWorldX;
+  const rawDY = worldPos.y - state.boxSelectPointerDown.downWorldY;
+  state.boxDragDeltaCol = Math.round(rawDX / GRID_SIZE);
+  state.boxDragDeltaRow = Math.round(rawDY / GRID_SIZE);
+
+  // 从原始值(而非累加)重算每条受影响连线的自由端点/途经点，避免累积误差；
+  // 设备本身的实时位置由 devices.js 的 effectiveGridPos() 据 boxDragOrigin +
+  // boxDragDeltaCol/Row 现算，这里不用管。
+  for (const [connId, origin] of state.boxDragConnOrigin) {
+    const network = origin.network === 'pipe' ? PIPE_NETWORK : BELT_NETWORK;
+    const conn = network.getConns().find(c => c.id === connId);
+    if (!conn) continue;
+    conn.fromCell = origin.fromCell ? { col: origin.fromCell.col + state.boxDragDeltaCol, row: origin.fromCell.row + state.boxDragDeltaRow } : null;
+    conn.toCell = origin.toCell ? { col: origin.toCell.col + state.boxDragDeltaCol, row: origin.toCell.row + state.boxDragDeltaRow } : null;
+    conn.waypoints = origin.waypoints.map(wp => ({ col: wp.col + state.boxDragDeltaCol, row: wp.row + state.boxDragDeltaRow }));
+  }
+  recomputeAllFlows();
+}
+
+function commitBoxSelectDrag() {
+  for (const [deviceId, origin] of state.boxDragOrigin) {
+    const dev = state.devices.find(d => d.id === deviceId);
+    if (dev) {
+      dev.gridX = origin.gridX + state.boxDragDeltaCol;
+      dev.gridY = origin.gridY + state.boxDragDeltaRow;
+    }
+  }
+  recomputeAllFlows();
+
+  const excludeBelt = new Set(), excludePipe = new Set();
+  for (const [connId, origin] of state.boxDragConnOrigin) {
+    (origin.network === 'pipe' ? excludePipe : excludeBelt).add(connId);
+  }
+
+  if (state.boxDragBeforeSnapshot) {
+    const brokeBelt = brokeExistingValidConnection(state.boxDragBeforeSnapshot, BELT_NETWORK, excludeBelt);
+    const brokePipe = brokeExistingValidConnection(state.boxDragBeforeSnapshot, PIPE_NETWORK, excludePipe);
+    if (brokeBelt || brokePipe) revertLastHistoryStep();
+  }
+
+  state.boxDragBeforeSnapshot = null;
+  state.boxDragOrigin = null;
+  state.boxDragConnOrigin = null;
+  state.boxDragDeltaCol = 0;
+  state.boxDragDeltaRow = 0;
+  state.boxSelectPointerDown = null;
+  canvas.style.cursor = 'default';
+}
+
+// ---- 批量旋转(R 键)：整个选区绕包围盒中心整体转 90°，不是每个设备各自原地自转 ----
+// (用户已确认选这种"整体转向"，代价是非正方形设备混合选中时取整可能有半格漂移)
+
+function performBoxSelectRotate() {
+  const ids = state.boxSelectedDeviceIds;
+  if (ids.size === 0) return;
+  const devs = state.devices.filter(d => ids.has(d.id));
+  if (devs.length === 0) return;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const dev of devs) {
+    minX = Math.min(minX, dev.gridX);
+    minY = Math.min(minY, dev.gridY);
+    maxX = Math.max(maxX, dev.gridX + dev.w);
+    maxY = Math.max(maxY, dev.gridY + dev.h);
+  }
+  const pivotX = (minX + maxX) / 2, pivotY = (minY + maxY) / 2;
+
+  pushHistory();
+  const beforeSnapshot = state.history[state.history.length - 1];
+
+  for (const dev of devs) {
+    const cx = dev.gridX + dev.w / 2, cy = dev.gridY + dev.h / 2;
+    const relX = cx - pivotX, relY = cy - pivotY;
+    // 顺时针 90°：(dx,dy) -> (-dy,dx)，和现有 dev.rot=(flowDirOf(dev)+1)%4 /
+    // ctx.rotate(dir*PI/2) 的旋转方向一致。
+    const newCx = pivotX - relY, newCy = pivotY + relX;
+    const newW = dev.h, newH = dev.w;
+    dev.gridX = Math.round(newCx - newW / 2);
+    dev.gridY = Math.round(newCy - newH / 2);
+    dev.w = newW;
+    dev.h = newH;
+    if (!dev.kind || dev.kind === 'facility') {
+      dev.rot = (flowDirOf(dev) + 1) % 4;
+    } else {
+      // 汇流器/分流器没有 rot 概念(见单设备 R 键的同款限制)，但它们的
+      // mainInEdge/mainOutEdge 是固定的朝外方向，作为刚体一起转的一部分，
+      // 这两条边也要跟着转 90°，否则组内相对朝向会错位。
+      dev.mainInEdge = (dev.mainInEdge + 1) % 4;
+      dev.mainOutEdge = (dev.mainOutEdge + 1) % 4;
+    }
+  }
+  for (const dev of devs) clearWaypointsForDevice(dev.id);
+
+  recomputeAllFlows();
+
+  const excludeBelt = computeBoxDragAffectedConnIds(BELT_NETWORK);
+  const excludePipe = computeBoxDragAffectedConnIds(PIPE_NETWORK);
+  const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK, excludeBelt);
+  const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK, excludePipe);
+  if (brokeBelt || brokePipe) revertLastHistoryStep();
+  draw();
+}
+
+// ---- 批量删除(Delete/Backspace)----
+// 两端都在被删设备集合内的连线整体移除；只有一端在内的降级为悬空 stub(复用
+// pathfinding.js 抽出来的 detachDeviceFromConnections，和单设备删除同一套逻辑)；
+// 被显式框选中的连线本身无论端点如何一律整体移除。
+
+function performBoxSelectDelete() {
+  const deviceIds = state.boxSelectedDeviceIds;
+  const explicitBelt = state.boxSelectedConnectionIds;
+  const explicitPipe = state.boxSelectedPipeConnectionIds;
+  if (deviceIds.size === 0 && explicitBelt.size === 0 && explicitPipe.size === 0) return;
+
+  pushHistory();
+
+  for (const network of [BELT_NETWORK, PIPE_NETWORK]) {
+    const explicit = boxSelectedConnIdsForNetwork(network);
+    const removeIds = new Set(explicit);
+    for (const c of network.getConns()) {
+      const fromIn = c.fromDeviceId !== null && deviceIds.has(c.fromDeviceId);
+      const toIn = c.toDeviceId !== null && deviceIds.has(c.toDeviceId);
+      if (fromIn && toIn) removeIds.add(c.id);
+    }
+    network.setConns(network.getConns().filter(c => !removeIds.has(c.id)));
+  }
+
+  // 只剩"只有一端在被删集合内"的连线：分离成悬空端点，必须在移除设备本身之前
+  // 做(detachDeviceFromConnections 要读取设备当前端口位置)。
+  for (const deviceId of deviceIds) {
+    detachDeviceFromConnections(deviceId, BELT_NETWORK);
+    detachDeviceFromConnections(deviceId, PIPE_NETWORK);
+  }
+
+  state.devices = state.devices.filter(d => !deviceIds.has(d.id));
+  resetBoxSelectTransientState();
+  recomputeAllFlows();
+  draw();
+}
+
+// ---- 复制(Ctrl+C) / 粘贴(Ctrl+V，跟随鼠标预览，左键落地/右键或 Esc 取消) ----
+
+// 连线是否有资格进入剪贴板：两端(如果绑定了设备)都必须在被复制的设备集合内
+// (否则粘贴时会指向一个不存在于剪贴板里的设备，无法重新映射)；此外普通情况
+// 下还要求至少有一端绑定在被复制的设备上——单纯"被显式框选中的连线本身"是
+// 唯一的例外(即使它两端都是自由网格端点、没有绑定任何设备)，让用户能专门
+// 复制一段悬空的传送带/管道 stub。
+function connectionQualifiesForClipboard(conn, deviceIds, explicitlySelected) {
+  const fromOk = conn.fromDeviceId === null || deviceIds.has(conn.fromDeviceId);
+  const toOk = conn.toDeviceId === null || deviceIds.has(conn.toDeviceId);
+  if (!fromOk || !toOk) return false;
+  if (explicitlySelected.has(conn.id)) return true;
+  return (conn.fromDeviceId !== null && deviceIds.has(conn.fromDeviceId)) ||
+         (conn.toDeviceId !== null && deviceIds.has(conn.toDeviceId));
+}
+
+// 只保留拓扑信息(端点/途经点)，points/cellPath/startDir/goalDir/invalid 等寻路
+// 衍生字段一律不带走——粘贴落地后统一靠 computePath 按新位置重新算。
+function cloneConnForClipboard(conn) {
+  return {
+    fromDeviceId: conn.fromDeviceId, fromPort: conn.fromPort,
+    fromCell: conn.fromCell ? { ...conn.fromCell } : null,
+    toDeviceId: conn.toDeviceId, toPort: conn.toPort,
+    toCell: conn.toCell ? { ...conn.toCell } : null,
+    waypoints: (conn.waypoints || []).map(wp => ({ ...wp }))
+  };
+}
+
+function buildClipboardFromSelection() {
+  const deviceIds = state.boxSelectedDeviceIds;
+  if (deviceIds.size === 0 && state.boxSelectedConnectionIds.size === 0 && state.boxSelectedPipeConnectionIds.size === 0) return;
+
+  const devices = state.devices.filter(d => deviceIds.has(d.id)).map(d => JSON.parse(JSON.stringify(d)));
+  const connections = BELT_NETWORK.getConns()
+    .filter(c => connectionQualifiesForClipboard(c, deviceIds, state.boxSelectedConnectionIds))
+    .map(cloneConnForClipboard);
+  const pipeConnections = PIPE_NETWORK.getConns()
+    .filter(c => connectionQualifiesForClipboard(c, deviceIds, state.boxSelectedPipeConnectionIds))
+    .map(cloneConnForClipboard);
+
+  let anchorCol = Infinity, anchorRow = Infinity;
+  for (const d of devices) {
+    anchorCol = Math.min(anchorCol, d.gridX);
+    anchorRow = Math.min(anchorRow, d.gridY);
+  }
+  if (!isFinite(anchorCol)) { anchorCol = 0; anchorRow = 0; }
+
+  state.clipboard = { devices, connections, pipeConnections, anchorCol, anchorRow };
+}
+
+function updatePastePreview(clientX, clientY) {
+  const worldPos = screenToWorld(clientX, clientY);
+  const cell = worldToCell(worldPos.x, worldPos.y);
+  state.pastePreview = { originCol: cell.col, originRow: cell.row };
+}
+
+function cancelPastePending() {
+  state.pastePending = false;
+  state.pastePreview = null;
+}
+
+function commitPaste() {
+  if (!state.clipboard || !state.pastePreview) return;
+  const dCol = state.pastePreview.originCol - state.clipboard.anchorCol;
+  const dRow = state.pastePreview.originRow - state.clipboard.anchorRow;
+
+  pushHistory();
+  const beforeSnapshot = state.history[state.history.length - 1];
+
+  const idMap = new Map();
+  const newDeviceIds = new Set();
+  for (const dev of state.clipboard.devices) {
+    const newId = state.nextId++;
+    idMap.set(dev.id, newId);
+    newDeviceIds.add(newId);
+    state.devices.push({ ...dev, id: newId, gridX: dev.gridX + dCol, gridY: dev.gridY + dRow });
+  }
+
+  const newBeltIds = new Set();
+  const newPipeIds = new Set();
+  for (const network of [BELT_NETWORK, PIPE_NETWORK]) {
+    const clipConns = network === BELT_NETWORK ? state.clipboard.connections : state.clipboard.pipeConnections;
+    const newIds = network === BELT_NETWORK ? newBeltIds : newPipeIds;
+    for (const c of clipConns) {
+      const newId = network.nextId();
+      newIds.add(newId);
+      network.getConns().push({
+        id: newId,
+        fromDeviceId: c.fromDeviceId !== null ? idMap.get(c.fromDeviceId) : null,
+        fromPort: c.fromPort,
+        fromCell: c.fromCell ? { col: c.fromCell.col + dCol, row: c.fromCell.row + dRow } : null,
+        toDeviceId: c.toDeviceId !== null ? idMap.get(c.toDeviceId) : null,
+        toPort: c.toPort,
+        toCell: c.toCell ? { col: c.toCell.col + dCol, row: c.toCell.row + dRow } : null,
+        waypoints: c.waypoints.map(wp => ({ col: wp.col + dCol, row: wp.row + dRow })),
+        points: [], cellPath: null, startDir: null, goalDir: null, invalid: false
+      });
+    }
+  }
+
+  recomputeAllFlows();
+
+  // 粘贴设备属于"放置操作"，和工具栏生成新设备走同一条硬性规则：不能顺手压垮
+  // 一条操作前合法的连线，坏了整体撤销这次粘贴；新粘贴的连线自己是否 invalid
+  // 不受影响(维持"画/贴到不可达位置，留给用户调整"的既有行为)。
+  const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK, newBeltIds);
+  const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK, newPipeIds);
+  if (brokeBelt || brokePipe) {
+    revertLastHistoryStep();
+  } else {
+    // 成功落地后新粘贴的这批直接成为当前框选选中集合，方便接着微调。
+    state.boxSelectedDeviceIds = newDeviceIds;
+    state.boxSelectedConnectionIds = newBeltIds;
+    state.boxSelectedPipeConnectionIds = newPipeIds;
+  }
+  state.pastePending = false;
+  state.pastePreview = null;
+}
+
 // ---- 画布内鼠标交互：平移 / 选中 / 拖拽已有设备 ----
 
 function bindCanvasMouseEvents() {
   canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 2) return; // 右键交给 contextmenu 处理(退出自由传送带模式)
+    if (e.button === 2) return; // 右键交给 contextmenu 处理(退出自由传送带模式/框选模式/取消待粘贴)
+
+    if (state.pastePending) {
+      if (e.button === 0) commitPaste();
+      draw();
+      return;
+    }
+
+    if (state.boxSelectMode) {
+      if (e.button !== 0) return;
+      handleBoxSelectMouseDown(e.clientX, e.clientY);
+      draw();
+      return;
+    }
 
     // Alt+左键点击已有传送带/管道：无论当前是否已在画线模式中，都优先生成分流器；
     // 管道是视觉上层，优先尝试生成管道分流器，否则退回生成传送带分流器。
@@ -637,8 +1107,23 @@ function bindCanvasMouseEvents() {
     }
   });
 
-  // 右键：退出自由传送带/自由管道模式(阻止浏览器默认右键菜单)
+  // 右键：退出自由传送带/自由管道/框选模式，或取消待粘贴(阻止浏览器默认右键菜单)
   canvas.addEventListener('contextmenu', (e) => {
+    if (state.pastePending) {
+      e.preventDefault();
+      cancelPastePending();
+      draw();
+      return;
+    }
+    if (state.boxSelectMode) {
+      e.preventDefault();
+      resetBoxSelectTransientState();
+      state.boxSelectMode = false;
+      canvas.style.cursor = 'default';
+      updateHintText();
+      draw();
+      return;
+    }
     if (!state.freeBeltMode && !state.freePipeMode) return;
     e.preventDefault();
     if (state.freeBeltMode) {
@@ -658,6 +1143,33 @@ function bindCanvasMouseEvents() {
   });
 
   window.addEventListener('mousemove', (e) => {
+    if (state.pastePending) {
+      updatePastePreview(e.clientX, e.clientY);
+      draw();
+      return;
+    }
+    if (state.boxDragOrigin) {
+      updateBoxSelectDrag(e.clientX, e.clientY);
+      draw();
+      return;
+    }
+    if (state.boxSelectMarquee) {
+      updateBoxSelectMarquee(e.clientX, e.clientY);
+      draw();
+      return;
+    }
+    if (state.boxSelectPointerDown) {
+      const dx = e.clientX - state.boxSelectPointerDown.downX, dy = e.clientY - state.boxSelectPointerDown.downY;
+      if (dx * dx + dy * dy > 16) {
+        if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
+        const wx = state.boxSelectPointerDown.downWorldX, wy = state.boxSelectPointerDown.downWorldY;
+        state.boxSelectPointerDown = null;
+        state.boxSelectMarquee = { startWX: wx, startWY: wy, curWX: wx, curWY: wy };
+        updateBoxSelectMarquee(e.clientX, e.clientY);
+        draw();
+      }
+      return;
+    }
     if (state.freeBeltMode) {
       // 无论是否已选定起点 A，都要实时更新设备本体悬停高亮；已选定 A 时还要更新路径预览
       updateFreePreview(BELT_UI, e.clientX, e.clientY);
@@ -772,6 +1284,21 @@ function bindCanvasMouseEvents() {
   });
 
   window.addEventListener('mouseup', (e) => {
+    if (state.boxDragOrigin) {
+      commitBoxSelectDrag();
+      draw();
+      return;
+    }
+    if (state.boxSelectMarquee) {
+      commitBoxSelectMarquee();
+      draw();
+      return;
+    }
+    if (state.boxSelectPointerDown) {
+      resolveBoxSelectClickToggle();
+      draw();
+      return;
+    }
     if (state.pipeEndpointDrag) {
       const conn = state.pipeConnections.find(c => c.id === state.pipeEndpointDrag.connId);
       if (conn) {
@@ -969,6 +1496,40 @@ function bindKeyboardEvents() {
       return;
     }
 
+    // 复制/粘贴只在框选批量操作模式内生效，不在普通模式/自由画线模式下抢占
+    // Ctrl+C/V(这两个模式各自没有"复制"的概念)。
+    if (state.boxSelectMode && (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+      e.preventDefault();
+      buildClipboardFromSelection();
+      return;
+    }
+    if (state.boxSelectMode && !state.pastePending && state.clipboard && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+      e.preventDefault();
+      state.pastePending = true;
+      state.pastePreview = null;
+      draw();
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      if (state.pastePending) {
+        e.preventDefault();
+        cancelPastePending();
+        draw();
+        return;
+      }
+      if (state.boxSelectMode) {
+        e.preventDefault();
+        resetBoxSelectTransientState();
+        state.boxSelectMode = false;
+        canvas.style.cursor = 'default';
+        updateHintText();
+        draw();
+        return;
+      }
+      return;
+    }
+
     if (e.key === 'e' || e.key === 'E') {
       e.preventDefault();
       state.freeBeltMode = !state.freeBeltMode;
@@ -977,7 +1538,7 @@ function bindKeyboardEvents() {
       state.freeBeltHoverDeviceId = null;
       if (state.freeBeltMode) {
         // 进入布线模式即为独占工具：清掉其它可能残留的交互状态，包括另一个
-        // 画线工具(自由管道模式)的进行中状态——两个模式互斥。
+        // 画线工具(自由管道模式)和框选批量操作模式的进行中状态——三者互斥。
         state.freePipeMode = false;
         state.freePipeStart = null;
         state.freePipePreviewPts = null;
@@ -995,6 +1556,8 @@ function bindKeyboardEvents() {
         state.selectedConnectionId = null;
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
+        resetBoxSelectTransientState();
+        state.boxSelectMode = false;
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1011,7 +1574,8 @@ function bindKeyboardEvents() {
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
       if (state.freePipeMode) {
-        // 镜像上面的 E 键处理，且互斥清空自由传送带模式的进行中状态。
+        // 镜像上面的 E 键处理，且互斥清空自由传送带模式和框选批量操作模式的
+        // 进行中状态。
         state.freeBeltMode = false;
         state.freeBeltStart = null;
         state.freeBeltPreviewPts = null;
@@ -1029,6 +1593,28 @@ function bindKeyboardEvents() {
         state.selectedConnectionId = null;
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
+        resetBoxSelectTransientState();
+        state.boxSelectMode = false;
+        canvas.style.cursor = 'crosshair';
+      } else {
+        canvas.style.cursor = 'default';
+      }
+      updateHintText();
+      draw();
+      return;
+    }
+
+    if (e.key === 'x' || e.key === 'X') {
+      e.preventDefault();
+      state.boxSelectMode = !state.boxSelectMode;
+      resetBoxSelectTransientState();
+      if (state.boxSelectMode) {
+        // 进入框选模式即为独占工具：强制退出另外两个自由画线模式(镜像 E/Q 入口
+        // 互相强制关闭对方的写法)，并清空普通模式下的单选态。
+        exitFreeBeltAndPipeModes();
+        state.selectedId = null;
+        state.selectedConnectionId = null;
+        state.selectedPipeConnectionId = null;
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1039,6 +1625,11 @@ function bindKeyboardEvents() {
     }
 
     if (e.key === 'r' || e.key === 'R') {
+      if (state.boxSelectMode && state.boxSelectedDeviceIds.size > 0) {
+        e.preventDefault();
+        performBoxSelectRotate();
+        return;
+      }
       if (state.selectedId === null) return;
       const dev = state.devices.find(d => d.id === state.selectedId);
       // 汇流器/分流器(传送带版和管道版)的朝向由被切入的原连线决定，不支持手动旋转；
@@ -1068,6 +1659,11 @@ function bindKeyboardEvents() {
     }
 
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    if (state.boxSelectMode && (state.boxSelectedDeviceIds.size > 0 || state.boxSelectedConnectionIds.size > 0 || state.boxSelectedPipeConnectionIds.size > 0)) {
+      e.preventDefault();
+      performBoxSelectDelete();
+      return;
+    }
     if (state.selectedPipeConnectionId !== null) {
       e.preventDefault();
       pushHistory();
@@ -1085,40 +1681,13 @@ function bindKeyboardEvents() {
       pushHistory();
       // 删除设备只移除设备本身：与它相连的传送带/管道保留下来，端点改为设备
       // 原先所在端口紧邻的那格自由网格端点，成为一段悬空的连线，仍可在普通
-      // 模式下选中/删除，或拖拽途经点调整。getDevicePorts 返回的是 belt+pipe
-      // 合并端口列表，按 index 查找对两种连线都适用。
+      // 模式下选中/删除，或拖拽途经点调整。两个网络的分离逻辑抽成了
+      // pathfinding.js 的 detachDeviceFromConnections，批量删除(performBoxSelectDelete)
+      // 复用同一份。
       const dev = state.devices.find(d => d.id === state.selectedId);
       if (dev) {
-        const pos = effectiveGridPos(dev);
-        const ports = getDevicePorts(dev, pos);
-        for (const c of state.connections) {
-          if (c.fromDeviceId === state.selectedId) {
-            const p = ports.outputs.find(pp => pp.index === c.fromPort);
-            c.fromDeviceId = null;
-            c.fromPort = null;
-            c.fromCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
-          }
-          if (c.toDeviceId === state.selectedId) {
-            const p = ports.inputs.find(pp => pp.index === c.toPort);
-            c.toDeviceId = null;
-            c.toPort = null;
-            c.toCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
-          }
-        }
-        for (const c of state.pipeConnections) {
-          if (c.fromDeviceId === state.selectedId) {
-            const p = ports.outputs.find(pp => pp.index === c.fromPort);
-            c.fromDeviceId = null;
-            c.fromPort = null;
-            c.fromCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
-          }
-          if (c.toDeviceId === state.selectedId) {
-            const p = ports.inputs.find(pp => pp.index === c.toPort);
-            c.toDeviceId = null;
-            c.toPort = null;
-            c.toCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
-          }
-        }
+        detachDeviceFromConnections(state.selectedId, BELT_NETWORK);
+        detachDeviceFromConnections(state.selectedId, PIPE_NETWORK);
       }
       state.devices = state.devices.filter(d => d.id !== state.selectedId);
       state.selectedId = null;

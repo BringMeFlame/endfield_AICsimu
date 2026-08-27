@@ -36,12 +36,25 @@ export function effectiveGridPos(dev) {
   if (dev.id === state.draggingDeviceId) {
     return { gridX: Math.round(state.dragDeviceWX / GRID_SIZE), gridY: Math.round(state.dragDeviceWY / GRID_SIZE) };
   }
+  // 框选批量拖动中：origin 记录的是拖动开始前的格坐标，叠加当前整体格偏移
+  // (刚体平移，选区内所有设备共用同一个偏移)。
+  if (state.boxDragOrigin && state.boxDragOrigin.has(dev.id)) {
+    const origin = state.boxDragOrigin.get(dev.id);
+    return { gridX: origin.gridX + state.boxDragDeltaCol, gridY: origin.gridY + state.boxDragDeltaRow };
+  }
   return { gridX: dev.gridX, gridY: dev.gridY };
 }
 
 export function rectsOverlap(a, b) {
   return !(a.gridX + a.w <= b.gridX || b.gridX + b.w <= a.gridX ||
            a.gridY + a.h <= b.gridY || b.gridY + b.h <= a.gridY);
+}
+
+// 像素空间(世界坐标)矩形相交测试，供框选矩形(角点不吸附网格)和设备的世界像素
+// 包围盒做相交判定；rectsOverlap 是它的整格版本，这里是连续坐标版本，逻辑同构。
+export function rectsOverlapPx(a, b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x ||
+           a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
 
 // 计算当前所有设备中互相重叠(碰撞)的设备 id 集合

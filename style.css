@@ -36,6 +36,9 @@ canvas {
 #hint.pipe-mode {
   border-color: rgba(2, 136, 209, 0.7);
 }
+#hint.box-select-mode {
+  border-color: rgba(94, 53, 177, 0.7);
+}
 
 #toolbar {
   position: fixed;

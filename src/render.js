@@ -1,5 +1,5 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PIPE_ACCENT, BOX_SELECT_ACCENT } from './constants.js';
 import { state, ctx } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
@@ -237,7 +237,9 @@ function drawDevices() {
       // 地面冲突警示(管道分流器/汇流器落在已有传送带地面格上)复用同一套红色
       // 重叠警示，见 interactions.js 里 groundConflict 的说明。
       colliding: collidingIds.has(dev.id) || dev.groundConflict === true,
-      selected: dev.id === state.selectedId,
+      // 框选批量选中和普通单选共用同一套黄色斜纹选中视觉(CLAUDE.md："选中态
+      // 统一用黄色系")，不为多选另起一种颜色。
+      selected: dev.id === state.selectedId || state.boxSelectedDeviceIds.has(dev.id),
       freeBeltHover: dev.id === state.freeBeltHoverDeviceId,
       freePipeHover: dev.id === state.freePipeHoverDeviceId
     });
@@ -446,10 +448,12 @@ function drawLogisticsBridge(col, row, overColor, baseWidth) {
 
 function drawConnections() {
   for (const c of state.connections) {
-    drawConnectionPath(c, { selected: c.id === state.selectedConnectionId });
+    const selected = c.id === state.selectedConnectionId || state.boxSelectedConnectionIds.has(c.id);
+    drawConnectionPath(c, { selected });
   }
   for (const cr of computeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedConnectionId ? BELT_COLOR_SELECTED : BELT_COLOR;
+    const selected = cr.overConn.id === state.selectedConnectionId || state.boxSelectedConnectionIds.has(cr.overConn.id);
+    const overColor = selected ? BELT_COLOR_SELECTED : BELT_COLOR;
     drawLogisticsBridge(cr.col, cr.row, overColor, BELT_WIDTH);
   }
 }
@@ -459,10 +463,12 @@ function drawConnections() {
 // overColor，不需要新的桥体绘制代码。
 function drawPipeConnections() {
   for (const c of state.pipeConnections) {
-    drawConnectionPath(c, { selected: c.id === state.selectedPipeConnectionId, network: 'pipe' });
+    const selected = c.id === state.selectedPipeConnectionId || state.boxSelectedPipeConnectionIds.has(c.id);
+    drawConnectionPath(c, { selected, network: 'pipe' });
   }
   for (const cr of computePipeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedPipeConnectionId ? PIPE_COLOR_SELECTED : PIPE_COLOR;
+    const selected = cr.overConn.id === state.selectedPipeConnectionId || state.boxSelectedPipeConnectionIds.has(cr.overConn.id);
+    const overColor = selected ? PIPE_COLOR_SELECTED : PIPE_COLOR;
     drawLogisticsBridge(cr.col, cr.row, overColor, PIPE_WIDTH);
   }
 }
@@ -586,6 +592,54 @@ function drawSpawnPreview() {
   ctx.restore();
 }
 
+// 框选批量操作模式下正在拖拽中的矩形选框：仿 drawSpawnPreview 的虚线矩形手感，
+// 用框选模式自己的紫色强调色(BOX_SELECT_ACCENT)，和绿色(传送带)/蓝色(管道)/
+// 黄色(选中)/红色(警示)都区分开——这是"框选操作本身进行中"的视觉，不是"选中"
+// 本身(那部分复用现有的黄色选中态，见 drawDevices/drawConnections)。
+function drawBoxSelectMarquee() {
+  if (!state.boxSelectMarquee) return;
+  const { startWX, startWY, curWX, curWY } = state.boxSelectMarquee;
+  const x = Math.min(startWX, curWX), y = Math.min(startWY, curWY);
+  const w = Math.abs(curWX - startWX), h = Math.abs(curWY - startWY);
+  const topLeft = worldToScreen(x, y);
+  const sw = w * state.scale, sh = h * state.scale;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(94, 53, 177, 0.12)'; // 同色相、低不透明度的框选填充，边框用 BOX_SELECT_ACCENT 本身
+  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.lineWidth = scaled(2);
+  ctx.setLineDash([scaled(6), scaled(4)]);
+  ctx.strokeStyle = BOX_SELECT_ACCENT;
+  ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// 粘贴预览：跟随鼠标的半透明 ghost 设备组，仿 drawSpawnPreview 的手感，但只画
+// 矩形+标签(不画端口/连线预览，见 CLAUDE.md 复制粘贴设计里"粘贴预览只画设备
+// ghost"的取舍)。每个 ghost 的位置由 state.clipboard 的相对布局 + 当前悬停格
+// 与复制时锚点的偏移现算，不额外存一份"已换算"的坐标副本。
+function drawPastePreview() {
+  if (!state.pastePending || !state.pastePreview || !state.clipboard) return;
+  const dCol = state.pastePreview.originCol - state.clipboard.anchorCol;
+  const dRow = state.pastePreview.originRow - state.clipboard.anchorRow;
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  for (const dev of state.clipboard.devices) {
+    const rect = getDeviceRectWorld(dev.gridX + dCol, dev.gridY + dRow, dev.w, dev.h);
+    const topLeft = worldToScreen(rect.x, rect.y);
+    const sw = rect.w * state.scale, sh = rect.h * state.scale;
+    ctx.fillStyle = dev.color;
+    ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.lineWidth = scaled(2);
+    ctx.setLineDash([scaled(6), scaled(4)]);
+    ctx.strokeStyle = dev.borderColor;
+    ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}
+
 // 光标旁的轻量文字提示(如拉线规则被拒绝时的原因说明)：固定屏幕像素大小，不随
 // 地图缩放变化——这是贴在光标旁的 UI 提示文字，不是地图内容，缩放会导致文字
 // 忽大忽小、反而降低可读性。
@@ -619,6 +673,8 @@ export function draw() {
   drawPipeConnections();  // 管道 + 管道物流桥 —— 画在设备之上，呼应"空中单位"语义
   drawPipeWaypoints();
   drawSpawnPreview();
+  drawBoxSelectMarquee();
+  drawPastePreview();
   drawFreeBeltPreview();
   drawFreePipePreview();
   drawCursorTooltip();

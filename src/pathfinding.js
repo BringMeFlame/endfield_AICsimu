@@ -627,6 +627,75 @@ export function hitTestConnection(clientX, clientY, network = BELT_NETWORK) {
 }
 export function hitTestPipeConnection(clientX, clientY) { return hitTestConnection(clientX, clientY, PIPE_NETWORK); }
 
+// ---- 框选批量操作辅助：矩形相交测试 / 设备-连线拓扑关联 / 批量分离 ----
+
+// 连线是否与给定的世界像素矩形相交：路径全是正交直线段(A* 只走横平竖直)，一段
+// 的包围盒就是这一段本身，逐段做包围盒相交测试等价于逐段做线段裁剪测试，比
+// "点是否落在矩形内"更准确——能框住横穿整个矩形、自身两端点都不在矩形内的
+// 长直段。
+function segmentIntersectsRect(ax, ay, bx, by, rect) {
+  const segMinX = Math.min(ax, bx), segMaxX = Math.max(ax, bx);
+  const segMinY = Math.min(ay, by), segMaxY = Math.max(ay, by);
+  return !(segMaxX < rect.x || rect.x + rect.w < segMinX ||
+           segMaxY < rect.y || rect.y + rect.h < segMinY);
+}
+export function connectionIntersectsRect(conn, rectWorld) {
+  if (!conn.points || conn.points.length < 2) return false;
+  for (let i = 0; i < conn.points.length - 1; i++) {
+    const a = conn.points[i], b = conn.points[i + 1];
+    if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rectWorld)) return true;
+  }
+  return false;
+}
+export function boxSelectHitConnections(rectWorld, network = BELT_NETWORK) {
+  const ids = new Set();
+  for (const c of network.getConns()) {
+    if (connectionIntersectsRect(c, rectWorld)) ids.add(c.id);
+  }
+  return ids;
+}
+
+// 找出某个网络里端点(起点或终点)绑定在 deviceIds 集合内任一设备上的所有连线 id。
+// 双重用途：(a) 框选批量移动/旋转时，据此确定哪些连线需要跟着刚体变换(连同它们
+// 的 waypoints/自由端点)；(b) 同一个集合直接喂给 brokeExistingValidConnection 的
+// excludeIds——"这条连线的端点设备正被我移动/旋转"和"这条连线的变化是这次操作
+// 预期之内的直接后果，不是牵连到了别的无关连线"是同一件事。
+export function connectionsTouchingDevices(deviceIds, network = BELT_NETWORK) {
+  const ids = new Set();
+  for (const c of network.getConns()) {
+    if ((c.fromDeviceId !== null && deviceIds.has(c.fromDeviceId)) ||
+        (c.toDeviceId !== null && deviceIds.has(c.toDeviceId))) {
+      ids.add(c.id);
+    }
+  }
+  return ids;
+}
+
+// 把某个网络里所有连到 deviceId 的连线分离成悬空自由端点(不删除连线本身)，端点
+// 坐标取该端口紧邻设备外侧的那一格。从单设备删除(keydown Delete 分支)抽出来的
+// 共享逻辑，批量删除对"只有一端在被删集合内"的连线要做同样的处理。调用方需已
+// pushHistory()，本函数自身不重复调用，也不负责 recomputeAllFlows()。
+export function detachDeviceFromConnections(deviceId, network = BELT_NETWORK) {
+  const dev = state.devices.find(d => d.id === deviceId);
+  if (!dev) return;
+  const pos = effectiveGridPos(dev);
+  const ports = getDevicePorts(dev, pos);
+  for (const c of network.getConns()) {
+    if (c.fromDeviceId === deviceId) {
+      const p = ports.outputs.find(pp => pp.index === c.fromPort);
+      c.fromDeviceId = null;
+      c.fromPort = null;
+      c.fromCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
+    }
+    if (c.toDeviceId === deviceId) {
+      const p = ports.inputs.find(pp => pp.index === c.toPort);
+      c.toDeviceId = null;
+      c.toPort = null;
+      c.toCell = { col: p ? p.cellCol : pos.gridX, row: p ? p.cellRow : pos.gridY };
+    }
+  }
+}
+
 // ---- 手动途经点(拖拽调整传送带路径) ----
 
 export function hitTestWaypoint(clientX, clientY, network = BELT_NETWORK) {
