@@ -1,8 +1,8 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT, POWER_WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
 import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 
 // 设备标签用的思源黑体 Black 字重(index.html 已引入 Google Fonts 的 Noto Sans SC)，
@@ -179,26 +179,6 @@ function drawDeviceRect(rect, dev, opts) {
     drawSelectionMarks(topLeft, sw, sh);
   }
 
-  // 断电警示：只在设备右上角画一个橙色圆形感叹号徽标，不改边框/填充颜色(和
-  // 重叠警示刻意区分开，两者同时出现时也都能看清，见 constants.js
-  // POWER_WARNING_COLOR 的说明)。
-  if (opts.unpowered) {
-    const r = scaled(17); // 大半个格子那么大(GRID_SIZE=50 时直径约占 68%)，之前 scaled(7) 太小不显眼
-    const bx = topLeft.x + sw, by = topLeft.y;
-    ctx.beginPath();
-    ctx.arc(bx, by, r, 0, Math.PI * 2);
-    ctx.fillStyle = POWER_WARNING_COLOR;
-    ctx.fill();
-    ctx.lineWidth = Math.max(1, scaled(1.5));
-    ctx.strokeStyle = '#ffffff';
-    ctx.stroke();
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold ${Math.max(8, r * 1.3)}px system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('!', bx, by + r * 0.05);
-  }
-
   // 自由传送带模式下悬停在设备本体(非精确端口)上：高亮提示"点击即可自动接入最近端口"
   if (opts.freeBeltHover) {
     ctx.lineWidth = scaled(3);
@@ -247,6 +227,64 @@ function drawDeviceRect(rect, dev, opts) {
   ctx.restore();
 }
 
+// 设备警告图标：贴在设备包围盒右上角的小红点+"!"，复用"警告/无效态统一红色"
+// 语义(不为电力警告单开新颜色，见 constants.js WARNING_COLOR)。位置计算复用
+// devices.js 的 getWarningIconWorldPos(悬停命中判定也用同一个函数，两处不会
+// 因为各写一份坐标算法而错位)。目前唯一的警告类型是"未通电"(见 devices.js
+// 的 getDeviceWarnings)，新增警告类型时这里不需要改动。
+function drawWarningIcon(dev, unpoweredIds) {
+  if (!getDeviceWarnings(dev, unpoweredIds).length) return;
+  const pos = getWarningIconWorldPos(dev);
+  const screen = worldToScreen(pos.x, pos.y);
+  const r = scaled(WARNING_ICON_RADIUS);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(screen.x, screen.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = WARNING_COLOR;
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1, scaled(1.5));
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `900 ${Math.max(9, r * 1.3)}px ${LABEL_FONT_FAMILY}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('!', screen.x, screen.y + r * 0.05);
+  ctx.restore();
+}
+
+// 悬停在警告图标上的提示浮窗，样式镜像 drawCursorTooltip(深色底+彩色描边)，
+// 但描边色换成警告红、且不会自动到点消失——只要 state.hoveredWarningId 还在
+// (鼠标仍悬停在图标上)就持续显示，位置紧跟图标本身(随缩放/平移现算，不用
+// 记录点击时的静态坐标)。
+function drawWarningTooltip() {
+  if (!state.hoveredWarningId) return;
+  const dev = state.devices.find(d => d.id === state.hoveredWarningId.deviceId);
+  if (!dev) return;
+  const pos = getWarningIconWorldPos(dev);
+  const screen = worldToScreen(pos.x, pos.y);
+
+  ctx.save();
+  ctx.font = '12px system-ui, sans-serif';
+  const paddingX = 8, h = 24;
+  const text = state.hoveredWarningId.text;
+  const textWidth = ctx.measureText(text).width;
+  const w = textWidth + paddingX * 2;
+  const x = screen.x + scaled(WARNING_ICON_RADIUS) + 8, y = screen.y - h / 2;
+  ctx.fillStyle = 'rgba(20, 20, 20, 0.92)';
+  ctx.strokeStyle = WARNING_COLOR;
+  ctx.lineWidth = 1;
+  roundRectPathAt(x, y, w, h, 5);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + paddingX, y + h / 2);
+  ctx.restore();
+}
+
 function drawDevices() {
   const collidingIds = computeCollidingIds();
   const unpoweredIds = computeUnpoweredIds();
@@ -258,12 +296,14 @@ function drawDevices() {
       // 地面冲突警示(管道分流器/汇流器落在已有传送带地面格上)复用同一套红色
       // 重叠警示，见 interactions.js 里 groundConflict 的说明。
       colliding: collidingIds.has(dev.id) || dev.groundConflict === true,
-      selected: dev.id === state.selectedId,
+      // 框选批量选中和普通单选共用同一套黄色斜纹选中视觉(CLAUDE.md："选中态
+      // 统一用黄色系")，不为多选另起一种颜色。
+      selected: dev.id === state.selectedId || state.boxSelectedDeviceIds.has(dev.id),
       freeBeltHover: dev.id === state.freeBeltHoverDeviceId,
-      freePipeHover: dev.id === state.freePipeHoverDeviceId,
-      unpowered: unpoweredIds.has(dev.id)
+      freePipeHover: dev.id === state.freePipeHoverDeviceId
     });
     drawDevicePorts(dev, pos);
+    drawWarningIcon(dev, unpoweredIds);
   }
 }
 
@@ -477,10 +517,12 @@ function drawLogisticsBridge(col, row, overColor, baseWidth) {
 
 function drawConnections() {
   for (const c of state.connections) {
-    drawConnectionPath(c, { selected: c.id === state.selectedConnectionId });
+    const selected = c.id === state.selectedConnectionId || state.boxSelectedConnectionIds.has(c.id);
+    drawConnectionPath(c, { selected });
   }
   for (const cr of computeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedConnectionId ? BELT_COLOR_SELECTED : BELT_COLOR;
+    const selected = cr.overConn.id === state.selectedConnectionId || state.boxSelectedConnectionIds.has(cr.overConn.id);
+    const overColor = selected ? BELT_COLOR_SELECTED : BELT_COLOR;
     drawLogisticsBridge(cr.col, cr.row, overColor, BELT_WIDTH);
   }
 }
@@ -490,10 +532,12 @@ function drawConnections() {
 // overColor，不需要新的桥体绘制代码。
 function drawPipeConnections() {
   for (const c of state.pipeConnections) {
-    drawConnectionPath(c, { selected: c.id === state.selectedPipeConnectionId, network: 'pipe' });
+    const selected = c.id === state.selectedPipeConnectionId || state.boxSelectedPipeConnectionIds.has(c.id);
+    drawConnectionPath(c, { selected, network: 'pipe' });
   }
   for (const cr of computePipeCrossings()) {
-    const overColor = cr.overConn.id === state.selectedPipeConnectionId ? PIPE_COLOR_SELECTED : PIPE_COLOR;
+    const selected = cr.overConn.id === state.selectedPipeConnectionId || state.boxSelectedPipeConnectionIds.has(cr.overConn.id);
+    const overColor = selected ? PIPE_COLOR_SELECTED : PIPE_COLOR;
     drawLogisticsBridge(cr.col, cr.row, overColor, PIPE_WIDTH);
   }
 }
@@ -588,19 +632,13 @@ function drawFreePipePreview() {
 }
 
 // 选中供电桩/中继器时画出它的方形供电范围，方便规划布局；不常驻显示，避免
-// 多个供电设备的范围叠在一起把画面弄乱(用户已确认的设计选择)。
-function drawSelectedPowerRange() {
-  const dev = state.devices.find(d => d.id === state.selectedId);
-  if (!dev) return;
-  const rangeRect = getPowerRangeRect(dev);
-  if (!rangeRect) return;
-
-  const rect = getDeviceRectWorld(rangeRect.gridX, rangeRect.gridY, rangeRect.w, rangeRect.h);
+// 单个供电覆盖范围方块的绘制，H 键全局叠层(drawPowerRanges)和工具栏拖拽生成
+// 供电桩/中继器时的落地预览(drawSpawnPreview)共用，保证两处视觉一致。
+function drawPowerRangeRect(r) {
+  const rect = getDeviceRectWorld(r.gridX, r.gridY, r.w, r.h);
   const topLeft = worldToScreen(rect.x, rect.y);
   const sw = rect.w * state.scale;
   const sh = rect.h * state.scale;
-
-  ctx.save();
   ctx.fillStyle = POWER_RANGE_FILL;
   ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
   ctx.lineWidth = scaled(2);
@@ -608,6 +646,15 @@ function drawSelectedPowerRange() {
   ctx.strokeStyle = POWER_RANGE_STROKE;
   ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
   ctx.setLineDash([]);
+}
+
+// 供电覆盖范围叠层(H 键全局开关)：半透明黄橙色方块，覆盖 devices.js
+// computePowerRangeRects() 算出的每个供电桩/中继器覆盖范围，多个范围重叠处
+// 颜色自然叠加变深，直观体现覆盖强度。不常驻显示，按 H 键切换。
+function drawPowerRanges() {
+  if (!state.showPowerRanges) return;
+  ctx.save();
+  for (const r of computePowerRangeRects()) drawPowerRangeRect(r);
   ctx.restore();
 }
 
@@ -635,6 +682,16 @@ function drawSpawnPreview() {
   const previewRect = { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: template.w, h: template.h };
   const wouldCollide = rects.some(r => rectsOverlap(r, previewRect));
 
+  // 拖拽生成供电桩/中继器时顺带预览一下即将生效的供电覆盖范围，不用等落地后
+  // 再按 H 键才能看到——getPowerRangeRect 只认 powerRange 字段，非供电类设备
+  // (大多数)这里直接返回 null，不需要额外判断是否是供电桩/中继器。
+  const rangeRect = getPowerRangeRect({ powerRange: template.powerRange, gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: template.w, h: template.h });
+  if (rangeRect) {
+    ctx.save();
+    drawPowerRangeRect(rangeRect);
+    ctx.restore();
+  }
+
   const topLeft = worldToScreen(rect.x, rect.y);
   const sw = rect.w * state.scale;
   const sh = rect.h * state.scale;
@@ -648,6 +705,54 @@ function drawSpawnPreview() {
   ctx.strokeStyle = wouldCollide ? '#ff1744' : template.borderColor;
   ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
   ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// 框选批量操作模式下正在拖拽中的矩形选框：仿 drawSpawnPreview 的虚线矩形手感，
+// 用框选模式自己的紫色强调色(BOX_SELECT_ACCENT)，和绿色(传送带)/蓝色(管道)/
+// 黄色(选中)/红色(警示)都区分开——这是"框选操作本身进行中"的视觉，不是"选中"
+// 本身(那部分复用现有的黄色选中态，见 drawDevices/drawConnections)。
+function drawBoxSelectMarquee() {
+  if (!state.boxSelectMarquee) return;
+  const { startWX, startWY, curWX, curWY } = state.boxSelectMarquee;
+  const x = Math.min(startWX, curWX), y = Math.min(startWY, curWY);
+  const w = Math.abs(curWX - startWX), h = Math.abs(curWY - startWY);
+  const topLeft = worldToScreen(x, y);
+  const sw = w * state.scale, sh = h * state.scale;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(94, 53, 177, 0.12)'; // 同色相、低不透明度的框选填充，边框用 BOX_SELECT_ACCENT 本身
+  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.lineWidth = scaled(2);
+  ctx.setLineDash([scaled(6), scaled(4)]);
+  ctx.strokeStyle = BOX_SELECT_ACCENT;
+  ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// 粘贴预览：跟随鼠标的半透明 ghost 设备组，仿 drawSpawnPreview 的手感，但只画
+// 矩形+标签(不画端口/连线预览，见 CLAUDE.md 复制粘贴设计里"粘贴预览只画设备
+// ghost"的取舍)。每个 ghost 的位置由 state.clipboard 的相对布局 + 当前悬停格
+// 与复制时锚点的偏移现算，不额外存一份"已换算"的坐标副本。
+function drawPastePreview() {
+  if (!state.pastePending || !state.pastePreview || !state.clipboard) return;
+  const dCol = state.pastePreview.originCol - state.clipboard.anchorCol;
+  const dRow = state.pastePreview.originRow - state.clipboard.anchorRow;
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  for (const dev of state.clipboard.devices) {
+    const rect = getDeviceRectWorld(dev.gridX + dCol, dev.gridY + dRow, dev.w, dev.h);
+    const topLeft = worldToScreen(rect.x, rect.y);
+    const sw = rect.w * state.scale, sh = rect.h * state.scale;
+    ctx.fillStyle = dev.color;
+    ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.lineWidth = scaled(2);
+    ctx.setLineDash([scaled(6), scaled(4)]);
+    ctx.strokeStyle = dev.borderColor;
+    ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
+    ctx.setLineDash([]);
+  }
   ctx.restore();
 }
 
@@ -678,15 +783,18 @@ function drawCursorTooltip() {
 
 export function draw() {
   drawGrid();
-  drawSelectedPowerRange(); // 供电范围画在最底层，不盖住传送带/设备
+  drawPowerRanges();      // 供电覆盖范围叠层，画在最底层，不遮挡传送带/设备
   drawConnections();      // 传送带 + 传送带物流桥
-  drawDevices();          // 设备遮住传送带(不变)
+  drawDevices();          // 设备遮住传送带(不变)，含警告图标
   drawWaypoints();
   drawPipeConnections();  // 管道 + 管道物流桥 —— 画在设备之上，呼应"空中单位"语义
   drawPipeWaypoints();
   drawSpawnPreview();
+  drawBoxSelectMarquee();
+  drawPastePreview();
   drawFreeBeltPreview();
   drawFreePipePreview();
+  drawWarningTooltip();
   drawCursorTooltip();
   updatePowerSummary();
 }

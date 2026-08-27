@@ -1,5 +1,5 @@
 // ---- 设备数据模型、端口计算、碰撞检测 ----
-import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS } from './constants.js';
+import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, WARNING_ICON_RADIUS } from './constants.js';
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
@@ -29,9 +29,12 @@ const FACILITY_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list])
     borderColor: '#111111',
     label: f.name,
     ports: f.ports,
+    // 供电覆盖范围检测(getPowerRangeRect)/管道跨越矮桩体寻路(buildBlockedSet)
+    // 要用到，落地时随 facilityId/ports 一起原样拷贝到设备实例上，见
+    // interactions.js 工具栏拖拽生成新设备那段。
     powerCost: f.powerCost,
-    needsPower: !!f.needsPower,
-    powerRange: f.powerRange
+    powerRange: f.powerRange,
+    isLowProfile: f.isLowProfile
   }))
 );
 
@@ -78,12 +81,25 @@ export function effectiveGridPos(dev) {
   if (dev.id === state.draggingDeviceId) {
     return { gridX: Math.round(state.dragDeviceWX / GRID_SIZE), gridY: Math.round(state.dragDeviceWY / GRID_SIZE) };
   }
+  // 框选批量拖动中：origin 记录的是拖动开始前的格坐标，叠加当前整体格偏移
+  // (刚体平移，选区内所有设备共用同一个偏移)。
+  if (state.boxDragOrigin && state.boxDragOrigin.has(dev.id)) {
+    const origin = state.boxDragOrigin.get(dev.id);
+    return { gridX: origin.gridX + state.boxDragDeltaCol, gridY: origin.gridY + state.boxDragDeltaRow };
+  }
   return { gridX: dev.gridX, gridY: dev.gridY };
 }
 
 export function rectsOverlap(a, b) {
   return !(a.gridX + a.w <= b.gridX || b.gridX + b.w <= a.gridX ||
            a.gridY + a.h <= b.gridY || b.gridY + b.h <= a.gridY);
+}
+
+// 像素空间(世界坐标)矩形相交测试，供框选矩形(角点不吸附网格)和设备的世界像素
+// 包围盒做相交判定；rectsOverlap 是它的整格版本，这里是连续坐标版本，逻辑同构。
+export function rectsOverlapPx(a, b) {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x ||
+           a.y + a.h <= b.y || b.y + b.h <= a.y);
 }
 
 // 计算当前所有设备中互相重叠(碰撞)的设备 id 集合
@@ -106,10 +122,9 @@ export function computeCollidingIds() {
 
 // ---- 电力覆盖判定 ----
 // 供电桩/中继器（含息壤版）以自身占地中心为中心产生一个正方形无线供电范围
-// (facilities.js 的 powerRange 字段，供电桩 12、中继器 7)，需要用电的设备
-// (needsPower === true，按分类固化在 facilities.js 里，见该文件字段说明)只要
-// 占地和某个供电范围有部分重叠就算通电。和 computeCollidingIds() 一样是纯
-// 派生计算，每次从 state.devices 现算，不缓存、不进 history.js 的撤销栈。
+// (facilities.js 的 powerRange 字段，供电桩 12、中继器 7)，耗电设备(powerCost
+// 为负数)只要占地和某个供电范围有部分重叠就算通电。和 computeCollidingIds()
+// 一样是纯派生计算，每次从 state.devices 现算，不缓存、不进 history.js 的撤销栈。
 export function getPowerRangeRect(dev) {
   if (!dev.powerRange) return null;
   const pos = effectiveGridPos(dev);
@@ -119,20 +134,67 @@ export function getPowerRangeRect(dev) {
   return { gridX: cx - range / 2, gridY: cy - range / 2, w: range, h: range };
 }
 
-// 计算所有需要用电、但不在任何供电范围内的设备 id 集合
+// 供 H 键全局供电范围叠层(render.js 的 drawPowerRanges)遍历用：所有设备里能
+// 产生供电范围的那些(目前只有供电桩/中继器及其息壤版)各自的范围矩形。
+export function computePowerRangeRects() {
+  return state.devices.map(d => getPowerRangeRect(d)).filter(r => r !== null);
+}
+
+// 计算所有耗电(powerCost < 0)、但不在任何供电范围内的设备 id 集合。是否耗电
+// 直接读 powerCost 本身的正负号，不需要 facilities.js 单独维护一个 needsPower
+// 布尔字段——两者在全部 45 条真实数据上判定结果一致，前者更省一份数据。
 export function computeUnpoweredIds() {
-  const rangeRects = state.devices
-    .map(d => getPowerRangeRect(d))
-    .filter(r => r !== null);
+  const rangeRects = computePowerRangeRects();
   const unpowered = new Set();
   for (const dev of state.devices) {
-    if (!dev.needsPower) continue;
+    if (!(dev.powerCost < 0)) continue;
     const pos = effectiveGridPos(dev);
     const rect = { gridX: pos.gridX, gridY: pos.gridY, w: dev.w, h: dev.h };
     const powered = rangeRects.some(r => rectsOverlap(rect, r));
     if (!powered) unpowered.add(dev.id);
   }
   return unpowered;
+}
+
+// ---- 设备警告(图标+悬停提示) ----
+// 统一的小图标+悬停浮窗框架：往这个数组里按条件追加一行文字即可接入新的警告
+// 类型(如未来的"带宽超限"等)，不需要改动图标绘制(render.js)或悬停命中判定
+// (下面的 findWarningIconAt)的逻辑。
+export function getDeviceWarnings(dev, unpoweredIds) {
+  const warnings = [];
+  if (unpoweredIds.has(dev.id)) warnings.push('设备未通电');
+  return warnings;
+}
+
+// 警告图标固定贴在设备包围盒右上角(世界坐标)，render.js 绘制和下面的悬停命中
+// 判定共用这一个位置计算，避免两处各写一份、后续改位置漏改一处。
+export function getWarningIconWorldPos(dev) {
+  const pos = effectiveGridPos(dev);
+  const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
+  return { x: rect.x + rect.w, y: rect.y };
+}
+
+// 命中判定半径同端口拾取(portHitRadiusPx)的写法，按 state.scale 换算成屏幕
+// 像素，保证缩放后点击手感和图标视觉大小对得上。
+function warningIconHitRadiusPx() {
+  return WARNING_ICON_RADIUS * state.scale + 4;
+}
+
+export function findWarningIconAt(clientX, clientY) {
+  const unpoweredIds = computeUnpoweredIds();
+  const radius = warningIconHitRadiusPx();
+  for (let i = state.devices.length - 1; i >= 0; i--) {
+    const dev = state.devices[i];
+    const warnings = getDeviceWarnings(dev, unpoweredIds);
+    if (!warnings.length) continue;
+    const pos = getWarningIconWorldPos(dev);
+    const s = worldToScreen(pos.x, pos.y);
+    const dx = clientX - s.x, dy = clientY - s.y;
+    if (dx * dx + dy * dy <= radius * radius) {
+      return { deviceId: dev.id, text: warnings.join('\n') };
+    }
+  }
+  return null;
 }
 
 export function hitTestDevice(worldX, worldY) {

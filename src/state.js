@@ -69,6 +69,70 @@ export const state = {
   freePipePreviewPts: null,
   freePipeHoverDeviceId: null,
 
+  // ---- 框选批量操作模式(X 键切换)：拖出矩形框选/点选多个设备与连线，批量移动/
+  // 旋转/删除，Ctrl+C/V 复制粘贴——与 freeBeltMode/freePipeMode 同级的独占工具，
+  // 三者互斥，进入其中一个都要清空另外两个的进行中状态(见 interactions.js 里
+  // X/E/Q 三个键入口分支)。----
+  boxSelectMode: false,
+
+  // 当前框选批量选中的设备/传送带连线/管道连线 id 集合。这是独立于普通模式下
+  // selectedId/selectedConnectionId/selectedPipeConnectionId(单选)的第二套选中
+  // 机制，两者只在各自的模式下生效，互不混用；退出框选模式(X 再次/右键/Esc)
+  // 时清空。
+  boxSelectedDeviceIds: new Set(),
+  boxSelectedConnectionIds: new Set(),
+  boxSelectedPipeConnectionIds: new Set(),
+
+  // 鼠标按下时的候选态：按在某个已选中项上时，最终会是"松手前不再移动=切换
+  // 选中"、"按住不放够时长=长按启动批量拖动"、"按下后先移动=退化成框选拖拽"
+  // 三选一，具体是哪种要等 mousemove 越过阈值或计时器触发或 mouseup 才能确定，
+  // 这里先记下按下时的信息供三处后续判定共用。落在空白处(hitKind=null)也走
+  // 同一套候选态，用于区分"单纯点击空白=清空选中"和"拖拽空白=开始框选"。
+  boxSelectPointerDown: null, // { downX, downY, downWorldX, downWorldY, hitKind: 'device'|'belt'|'pipe'|null, hitId, wasSelected }
+
+  // 长按计时器(setTimeout 句柄)：按在已选中项上时启动，移动超过阈值/松手时都
+  // 要 clearTimeout 取消。token 只在自己仍是"当前这次按下"时才有效，避免极端
+  // 情况下计时器回调在 mouseup 已经处理完之后才触发的竞态(镜像
+  // showCursorTooltip 用时间戳 until 防止过期回调生效的写法)。
+  boxSelectLongPressTimer: null,
+  boxSelectLongPressToken: 0,
+
+  // 正在拖拽中的框选矩形(世界坐标，起止点未做 min/max 归一化，渲染/命中判定
+  // 时现算)。mouseup 时用它和设备/连线做相交测试，整体替换(不是叠加)当前选中
+  // 集合。
+  boxSelectMarquee: null, // { startWX, startWY, curWX, curWY }
+
+  // 批量拖动(长按已选中项触发)状态。beforeSnapshot 镜像单设备拖拽的
+  // draggingDeviceBeforeSnapshot；origin 记录参与移动的每个设备开始拖动前的
+  // 格坐标(devices.js 的 effectiveGridPos() 据此叠加 deltaCol/Row 实时计算显示
+  // 位置，和 draggingDeviceId 单设备版本对称)；connOrigin 记录"和这次移动有关"
+  // 的每条连线(见 interactions.js computeBoxDragAffectedConnIds 的取舍规则)开始
+  // 拖动前的 fromCell/toCell/waypoints，供每帧从原始值重算(而非增量累加)平移
+  // 后的新值，避免累积误差；deltaCol/Row 是当前整体格偏移(刚体平移，所有设备/
+  // 连线共用同一个偏移，不各自独立吸附，否则相对位置会走样)。
+  boxDragBeforeSnapshot: null,
+  boxDragOrigin: null, // Map<deviceId, {gridX, gridY}>
+  boxDragConnOrigin: null, // Map<connId, {network:'belt'|'pipe', fromCell, toCell, waypoints}>
+  boxDragDeltaCol: 0,
+  boxDragDeltaRow: 0,
+
+  // 复制/粘贴剪贴板：Ctrl+C 时从当前选中的设备/连线深拷贝一份(不受后续编辑
+  // 影响，语义上是真正的"剪贴板"，因此不受 undo()/退出框选模式的三点重置规则
+  // 约束——和 activeToolbarCategory 同理，是"持久化到下次替换为止"的状态，不是
+  // "进行到一半会被打断"的交互态)。anchorCol/Row 记录复制时选中设备整体包围盒
+  // 左上角(格坐标)，粘贴预览据此换算成"当前悬停格 - anchor"的整体偏移，保持
+  // 设备间相对位置不变。连线只保留两端(如果绑定了设备)都在被复制设备集合内的
+  // 那些，落盘前已清空 points/cellPath/startDir/goalDir/invalid 等寻路衍生字段
+  // (粘贴落地后统一用 computePath 重新算，不照抄复制时的几何，和其它任何新建
+  // 连线的约定一致)。
+  clipboard: null, // { devices, connections, pipeConnections, anchorCol, anchorRow }
+
+  // 当前是否有一次粘贴正在"跟随鼠标悬停预览、等待左键落地/右键或 Esc 取消"。
+  // pastePreview 只存悬停锚点格坐标，render.js 据此和 state.clipboard 联合现算
+  // 每个待粘贴设备的实际预览位置，不额外存一份"已换算"的副本(单一数据源)。
+  pastePending: false,
+  pastePreview: null, // { originCol, originRow }
+
   // ---- 手动调整传送带路径(途经点)的状态 ----
   draggingWaypoint: null, // { connId, index, originalCell }：originalCell 为 null 表示这是本次拖拽
   // 才新插入的途经点(松手时若路径无效应整体移除)，否则是拖拽开始前该途经点的 {col,row}(松手时若路径无效应还原到这个值)
@@ -91,6 +155,12 @@ export const state = {
 
   // ---- 光标旁的轻量提示(如"无法选择输入口作为起点") ----
   cursorTooltip: null, // { text, x, y, until }
+
+  // ---- 设备警告图标(如"未通电")的悬停提示 ----
+  // { deviceId, text } | null，鼠标悬停在某个设备的警告图标上时设置，随鼠标
+  // 移动持续刷新，图标本身的位置由 devices.js 的 getWarningIconWorldPos 按
+  // deviceId 现算，不是 cursorTooltip 那种到点自动消失的一次性通知。
+  hoveredWarningId: null,
 
   // ---- 撤销历史(Ctrl+Z / Cmd+Z)：每次修改画布数据的操作前保存一份快照 ----
   history: [],
@@ -118,5 +188,11 @@ export const state = {
   // offsetX/offsetY 摄像机状态同类)，不是"进行到一半会被打断"的交互态，
   // 所以不需要在 undo()/E 键切换自由传送带模式/鼠标收尾逻辑这三处重置——
   // 撤销画布数据、切换画线模式都不应该把用户正在看的工具栏标签页跳走。
-  activeToolbarCategory: null
+  activeToolbarCategory: null,
+
+  // ---- H 键切换：显示/隐藏所有供电桩/中继器的供电覆盖范围叠层 ----
+  // 和 activeToolbarCategory 同类的持久化视图开关，不是"进行到一半会被打断"
+  // 的交互态，同样不需要在 undo()/E 键切换自由传送带模式/鼠标收尾逻辑这三处
+  // 重置。
+  showPowerRanges: false
 };

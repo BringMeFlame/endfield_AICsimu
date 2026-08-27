@@ -3,7 +3,7 @@
 // 取舍/修正分类与数值，覆盖【基础生产】【合成制造】【电力】【仓储存取】全部设备
 // + 【其他】里的「协议核心」「次级核心」，同一款建筑的不同模式/配方拆成独立
 // 记录，共 45 条，全部字段均已补齐
-// 真实数据。footprint/ports/powerCost/needsPower/powerRange 已接入 SPAWN_TEMPLATES/
+// 真实数据。footprint/ports/powerCost/powerRange 已接入 SPAWN_TEMPLATES/
 // getDevicePorts()/供电覆盖判定/渲染；bandwidth 仍只是数据，未接入吞吐计算逻辑。
 //
 // 字段说明：
@@ -12,11 +12,9 @@
 // - powerCost：耗电量/供电量，负数=耗电、正数=供电、0=不耗电不供电，字段名和
 //   单位原样沿用用户提供的数据（例如「协议核心」+200 为供电、「热能池」+150
 //   为供电，其余耗电设备均为负数）。右上角总功率读数就是所有已放置设备
-//   powerCost 的总和。
-// - needsPower：是否需要落在供电桩/中继器的供电范围内才算正常运行，按分类规则
-//   显式标注（不是运行时按分类名反推）：【基础生产】【合成制造】全部为 true；
-//   【仓储存取】里仅「协议储存箱」为 true，其余为 false；【电力】【其他】全部
-//   为 false（后两个分类本身要么是供电来源、要么不参与供电玩法）。
+//   powerCost 的总和；是否需要落在供电桩/中继器供电范围内才算通电，直接看
+//   powerCost 是否为负（`devices.js` 的 `computeUnpoweredIds`），不单独维护
+//   一个 needsPower 布尔字段。
 // - powerRange：以自身占地中心为中心的方形无线供电范围边长（网格格数），只有
 //   「供电桩」「息壤供电桩」（12）和「中继器」「息壤中继器」（7）四条记录有
 //   这个字段，其余记录不设置。
@@ -39,7 +37,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -5,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -57,7 +54,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -5,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -77,7 +73,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -5,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -95,7 +90,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -113,7 +107,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -10,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -132,7 +125,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -10,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -150,7 +142,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -10,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -172,7 +163,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -194,7 +184,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -217,7 +206,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -232,7 +220,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -10,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -256,7 +243,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -280,7 +266,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -305,7 +290,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -329,7 +313,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -353,7 +336,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -373,7 +355,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 5 },
       footprintNote: null,
       powerCost: -100,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -397,7 +378,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -420,7 +400,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -440,7 +419,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -456,7 +434,6 @@ export const FACILITIES = {
       footprint: { w: 6, h: 4 },
       footprintNote: null,
       powerCost: -20,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -481,7 +458,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -498,7 +474,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -515,7 +490,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -532,7 +506,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -549,7 +522,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -562,7 +534,6 @@ export const FACILITIES = {
       footprint: { w: 5, h: 5 },
       footprintNote: null,
       powerCost: -50,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -580,7 +551,6 @@ export const FACILITIES = {
       footprint: { w: 2, h: 2 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       powerRange: 12,
       bandwidth: 1,
       isLowProfile: false,
@@ -592,7 +562,6 @@ export const FACILITIES = {
       footprint: { w: 2, h: 2 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       powerRange: 12,
       bandwidth: 1,
       isLowProfile: false,
@@ -604,7 +573,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       powerRange: 7,
       bandwidth: 1,
       isLowProfile: false,
@@ -616,7 +584,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       powerRange: 7,
       bandwidth: 1,
       isLowProfile: false,
@@ -628,7 +595,6 @@ export const FACILITIES = {
       footprint: { w: 2, h: 2 },
       footprintNote: null,
       powerCost: 150,
-      needsPower: false,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -644,7 +610,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: -5,
-      needsPower: true,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -662,7 +627,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 1 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: true,
       ports: [
@@ -675,7 +639,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 1 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: true,
       ports: [
@@ -688,7 +651,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -702,7 +664,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -716,7 +677,6 @@ export const FACILITIES = {
       footprint: { w: 4, h: 8 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: true,
       ports: [],
@@ -727,7 +687,6 @@ export const FACILITIES = {
       footprint: { w: 4, h: 4 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: false,
       ports: [],
@@ -738,7 +697,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: false,
       ports: [
@@ -751,7 +709,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 3 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: false,
       ports: [
@@ -764,7 +721,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 5 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: false,
       ports: [
@@ -778,7 +734,6 @@ export const FACILITIES = {
       footprint: { w: 3, h: 5 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 1,
       isLowProfile: false,
       ports: [
@@ -794,7 +749,6 @@ export const FACILITIES = {
       footprint: { w: 9, h: 9 },
       footprintNote: null,
       powerCost: 200,
-      needsPower: false,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
@@ -826,7 +780,6 @@ export const FACILITIES = {
       footprint: { w: 9, h: 9 },
       footprintNote: null,
       powerCost: 0,
-      needsPower: false,
       bandwidth: 2,
       isLowProfile: false,
       ports: [
