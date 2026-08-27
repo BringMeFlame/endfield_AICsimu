@@ -2,7 +2,7 @@
 import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
 import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES } from './devices.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 
 // 设备标签用的思源黑体 Black 字重(index.html 已引入 Google Fonts 的 Noto Sans SC)，
@@ -672,20 +672,24 @@ function drawSpawnPreview() {
   if (!state.spawnPreview || !state.spawningTemplateKey) return;
   const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
   if (!template) return;
-  const rect = getDeviceRectWorld(state.spawnPreview.gridX, state.spawnPreview.gridY, template.w, template.h);
+  // 落地前允许用 R 键预旋转(见 devices.js 的 getSpawnOrientedFields)：预览的
+  // 占地尺寸、供电范围、端口箭头都要按当前旋转步数现算，不能直接用
+  // template.w/h(那是未旋转的原始尺寸)。
+  const previewDev = buildSpawnPreviewDevice(template, state.spawnPreview.gridX, state.spawnPreview.gridY, state.spawnRotSteps);
+  const rect = getDeviceRectWorld(state.spawnPreview.gridX, state.spawnPreview.gridY, previewDev.w, previewDev.h);
 
   // 预览时也检测是否会与现有设备重叠
   const rects = state.devices.map(d => {
     const pos = effectiveGridPos(d);
     return { id: d.id, gridX: pos.gridX, gridY: pos.gridY, w: d.w, h: d.h };
   });
-  const previewRect = { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: template.w, h: template.h };
+  const previewRect = { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: previewDev.w, h: previewDev.h };
   const wouldCollide = rects.some(r => rectsOverlap(r, previewRect));
 
   // 拖拽生成供电桩/中继器时顺带预览一下即将生效的供电覆盖范围，不用等落地后
   // 再按 H 键才能看到——getPowerRangeRect 只认 powerRange 字段，非供电类设备
   // (大多数)这里直接返回 null，不需要额外判断是否是供电桩/中继器。
-  const rangeRect = getPowerRangeRect({ powerRange: template.powerRange, gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: template.w, h: template.h });
+  const rangeRect = getPowerRangeRect({ powerRange: template.powerRange, gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY, w: previewDev.w, h: previewDev.h });
   if (rangeRect) {
     ctx.save();
     drawPowerRangeRect(rangeRect);
@@ -706,6 +710,11 @@ function drawSpawnPreview() {
   ctx.strokeRect(topLeft.x, topLeft.y, sw, sh);
   ctx.setLineDash([]);
   ctx.restore();
+
+  // 端口箭头：让用户在落地前就能看清朝向，配合 R 键预旋转一起用。previewDev
+  // 没有 id，drawDevicePorts 里"是否已连接"的查询天然查不到任何连线，全部按
+  // "未连接"绘制，符合预览语义。
+  drawDevicePorts(previewDev, { gridX: state.spawnPreview.gridX, gridY: state.spawnPreview.gridY });
 }
 
 // Ctrl+拖拽 框选时正在拖拽中的矩形选框：仿 drawSpawnPreview 的虚线矩形手感，

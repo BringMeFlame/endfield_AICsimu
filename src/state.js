@@ -176,6 +176,16 @@ export const state = {
   spawning: false,
   spawnPreview: null, // { gridX, gridY, w, h } 悬停在画布上时的吸附预览
   spawningTemplateKey: null, // 当前正在拖拽生成的是 SPAWN_TEMPLATES 里哪一个模板(key)
+  // 落地前允许用 R 键预旋转：累计顺时针 90° 步数(0~3)，落地时读取应用到新
+  // 设备的 rot(facility)或 mainOutEdge/mainInEdge(汇流器/分流器)上，和已放置
+  // 设备的 R 键旋转是同一套朝向编号(见 devices.js 的 getSpawnOrientedFields)。
+  // 每次从工具栏重新开始拖拽新设备(mousedown)时归零。
+  spawnRotSteps: 0,
+  // 拖拽生成新设备期间持续跟随更新的鼠标屏幕坐标：keydown 事件本身不带鼠标
+  // 坐标，R 键旋转后要用它重新计算幽灵图标尺寸/落地预览吸附位置(两者都依赖
+  // "鼠标当前指向哪"，而不是旋转动作本身提供的信息)。
+  spawnPointerX: 0,
+  spawnPointerY: 0,
 
   // ---- 工具栏当前选中的分类标签页(纯 UI 导航状态) ----
   // 取值是 facilities.js 分类中文名之一，由 interactions.js 的 buildToolbarUI()

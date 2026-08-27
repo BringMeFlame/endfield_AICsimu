@@ -54,6 +54,7 @@ export function undo() {
   state.freePipeHoverDeviceId = null;
   state.lastConduitClickCell = null;
   state.spawningTemplateKey = null;
+  state.spawnRotSteps = 0;
   state.isPanning = false;
 
   // 框选批量操作的进行中状态同样要清空(clipboard 除外，它是持久剪贴板数据，

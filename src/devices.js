@@ -72,6 +72,42 @@ const NODE_TEMPLATES = [
 
 export const SPAWN_TEMPLATES = FACILITY_TEMPLATES.concat(NODE_TEMPLATES);
 
+// ---- 工具栏拖拽生成新设备：落地前允许用 R 键预旋转 ----
+// 按 rotSteps(0~3，累计顺时针 90° 次数，见 state.spawnRotSteps)把模板"未旋转"
+// 的字段(w/h 或 mainOutEdge/mainInEdge)转成当前预览朝向下的值，规则和已放置
+// 设备的 R 键旋转完全一致：facility 靠 rot 字段 + w/h 互换(facilityDevicePorts/
+// interactions.js 里已放置设备的 R 键处理)；汇流器/分流器(含管道版)直接把
+// mainOutEdge/mainInEdge 累加 rotSteps(nodeDevicePorts)。落地预览(render.js 的
+// drawSpawnPreview 现算端口)和真正落地生成设备(interactions.js 工具栏 mouseup)
+// 共用这一份，不允许出现两份重复的旋转算法。
+export function getSpawnOrientedFields(template, rotSteps) {
+  const rot = ((rotSteps % 4) + 4) % 4;
+  if (template.kind === 'facility') {
+    const w = rot % 2 === 0 ? template.w : template.h;
+    const h = rot % 2 === 0 ? template.h : template.w;
+    return { w, h, rot };
+  }
+  if (template.mainOutEdge !== undefined) {
+    return { w: template.w, h: template.h, mainOutEdge: (template.mainOutEdge + rot) % 4 };
+  }
+  return { w: template.w, h: template.h, mainInEdge: (template.mainInEdge + rot) % 4 };
+}
+
+// 供落地前预览端口箭头用的"假设备"：字段和真实落地后的设备实例同构(kind/w/h/
+// rot/ports/mainInEdge/mainOutEdge)，直接喂给 getDevicePorts()/getDeviceRectWorld()
+// 就能像画一个真设备一样把端口箭头画在预览位置上。不带 id——预览阶段还没真正
+// 落地，端口天然全部"未连接"，isXxxPortUsed() 系列函数按 deviceId 查
+// state.connections，永远查不到 undefined，天然得到"未连接"这个正确结果，
+// 不需要为预览专门写一套判断。
+export function buildSpawnPreviewDevice(template, gridX, gridY, rotSteps) {
+  return {
+    gridX, gridY,
+    kind: template.kind,
+    ports: template.ports,
+    ...getSpawnOrientedFields(template, rotSteps)
+  };
+}
+
 export function getDeviceRectWorld(gridX, gridY, w, h) {
   return { x: gridX * GRID_SIZE, y: gridY * GRID_SIZE, w: w * GRID_SIZE, h: h * GRID_SIZE };
 }

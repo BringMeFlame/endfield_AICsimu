@@ -5,7 +5,7 @@ import { screenToWorld, worldToCell } from './coords.js';
 import {
   hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts, getDeviceRectWorld, rectsOverlapPx,
   isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed,
-  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt
+  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt, getSpawnOrientedFields
 } from './devices.js';
 import {
   buildBlockedSet, buildBeltOccupancy, buildPipeOccupancy, aStarOrthogonal, removeSelfOverlap,
@@ -1619,6 +1619,23 @@ function bindKeyboardEvents() {
     }
 
     if (e.key === 'r' || e.key === 'R') {
+      // 正在从工具栏拖拽生成新设备(鼠标还没松开)时，R 键旋转的是手上这个还
+      // 没落地的模板本身，优先级要排在批量/单设备旋转前面——mousedown 时已经
+      // 清空了旧的单选/框选批量选中(见 toolbarIcons 的 mousedown 处理)，但
+      // 防御性地把这个分支放在最前面，即使将来那处清空逻辑被改掉也不会转错
+      // 目标。keydown 不带鼠标坐标，用 state.spawnPointerX/Y(mousemove 里持续
+      // 更新)重新计算幽灵图标尺寸和落地预览位置。
+      if (state.spawning) {
+        e.preventDefault();
+        state.spawnRotSteps = (state.spawnRotSteps + 1) % 4;
+        const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
+        if (template) {
+          updateGhostIconGeometry(template, state.spawnPointerX, state.spawnPointerY);
+          updateSpawnPreview(state.spawnPointerX, state.spawnPointerY);
+        }
+        draw();
+        return;
+      }
       if (state.boxSelectedDeviceIds.size > 0) {
         e.preventDefault();
         performBoxSelectRotate();
@@ -1720,9 +1737,14 @@ function isPointInToolbar(x, y) {
 // 尺寸一致。size 通过内联 style 设置，是本项目"位置类内联 style 允许突破
 // CSS-only 规则"的同一个例外(ghostIcon.style.left/top 早就是这么做的)，
 // 因为这是随设备/缩放变化的动态值，写不进静态 CSS 规则。
+// 落地前允许用 R 键预旋转(state.spawnRotSteps)，幽灵图标的尺寸要跟着旋转后
+// 的占地换算，不能直接用 template.w/h(那是未旋转的原始尺寸)——见 devices.js
+// 的 getSpawnOrientedFields，和落地预览(updateSpawnPreview)、真正落地生成
+// 设备(bindToolbarSpawnEvents 的 mouseup)共用同一份朝向换算逻辑。
 function updateGhostIconGeometry(template, clientX, clientY) {
-  const gw = template.w * GRID_SIZE * state.scale;
-  const gh = template.h * GRID_SIZE * state.scale;
+  const oriented = getSpawnOrientedFields(template, state.spawnRotSteps);
+  const gw = oriented.w * GRID_SIZE * state.scale;
+  const gh = oriented.h * GRID_SIZE * state.scale;
   ghostIcon.style.width = gw + 'px';
   ghostIcon.style.height = gh + 'px';
   ghostIcon.style.left = (clientX - gw / 2) + 'px';
@@ -1736,9 +1758,10 @@ function updateSpawnPreview(clientX, clientY) {
   }
   const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
   if (!template) { state.spawnPreview = null; return; }
+  const oriented = getSpawnOrientedFields(template, state.spawnRotSteps);
   const worldPos = screenToWorld(clientX, clientY);
-  const rawX = worldPos.x - (template.w * GRID_SIZE) / 2;
-  const rawY = worldPos.y - (template.h * GRID_SIZE) / 2;
+  const rawX = worldPos.x - (oriented.w * GRID_SIZE) / 2;
+  const rawY = worldPos.y - (oriented.h * GRID_SIZE) / 2;
   state.spawnPreview = {
     gridX: Math.round(rawX / GRID_SIZE),
     gridY: Math.round(rawY / GRID_SIZE)
@@ -1798,16 +1821,31 @@ function bindToolbarSpawnEvents() {
     e.preventDefault();
     const key = icon.dataset.key;
     const template = SPAWN_TEMPLATES.find(t => t.key === key);
+    // 从工具栏拖出新设备是一次新的、独立的操作，清空普通模式下残留的单选/
+    // 框选批量选中——否则拖拽期间按 R 预旋转正在生成的这个设备时，会被
+    // keydown 'r' 处理里排在前面的批量/单设备旋转分支抢先命中，转到了别的、
+    // 早就选中的旧设备上而不是手上这个新设备(见下面 keydown 'r' 分支的
+    // 优先级)。
+    state.selectedId = null;
+    state.selectedConnectionId = null;
+    state.selectedPipeConnectionId = null;
+    resetBoxSelectTransientState();
     state.spawning = true;
     state.spawningTemplateKey = key;
+    state.spawnRotSteps = 0;
+    state.spawnPointerX = e.clientX;
+    state.spawnPointerY = e.clientY;
     ghostIcon.style.display = 'flex';
     ghostIcon.textContent = template.label;
     updateGhostIconGeometry(template, e.clientX, e.clientY);
     updateSpawnPreview(e.clientX, e.clientY);
+    draw();
   });
 
   window.addEventListener('mousemove', (e) => {
     if (!state.spawning) return;
+    state.spawnPointerX = e.clientX;
+    state.spawnPointerY = e.clientY;
     const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
     if (template) updateGhostIconGeometry(template, e.clientX, e.clientY);
     updateSpawnPreview(e.clientX, e.clientY);
@@ -1823,13 +1861,17 @@ function bindToolbarSpawnEvents() {
     if (state.spawnPreview && template && !isPointInToolbar(e.clientX, e.clientY)) {
       pushHistory();
       const beforeSnapshot = state.history[state.history.length - 1];
+      // 落地时把预览阶段按 R 键累积的旋转(state.spawnRotSteps)固化到新设备的
+      // w/h/rot(facility)或 mainOutEdge/mainInEdge(汇流器/分流器)上，和预览
+      // (updateSpawnPreview/render.js 的 drawSpawnPreview)共用同一份换算逻辑。
+      const oriented = getSpawnOrientedFields(template, state.spawnRotSteps);
       const newDevice = {
         id: state.nextId++,
         gridX: state.spawnPreview.gridX,
         gridY: state.spawnPreview.gridY,
-        w: template.w,
-        h: template.h,
-        rot: 0,
+        w: oriented.w,
+        h: oriented.h,
+        rot: oriented.rot || 0,
         kind: template.kind,
         color: template.color,
         borderColor: template.borderColor,
@@ -1852,10 +1894,11 @@ function bindToolbarSpawnEvents() {
         } : {}),
         // 汇流器/分流器(含管道版)专属：mainOutEdge/mainInEdge 决定哪条边固定是
         // 出口/入口，其余边留给用户在自由传送带/管道模式里逐条连接(见
-        // nodeDevicePorts)。空节点落地时从模板拷贝默认朝向，用户可以之后按 R
-        // 键旋转调整(与 facility 共用同一套 R 键处理，见下方 keydown 里的分支)。
-        ...(template.mainOutEdge !== undefined ? { mainOutEdge: template.mainOutEdge } : {}),
-        ...(template.mainInEdge !== undefined ? { mainInEdge: template.mainInEdge } : {})
+        // nodeDevicePorts)。落地前已经可以用 R 键预旋转(oriented 已经算上了
+        // state.spawnRotSteps)，落地后仍可继续用 R 键旋转调整(与 facility 共用
+        // 同一套 R 键处理，见下方 keydown 里的分支)。
+        ...(oriented.mainOutEdge !== undefined ? { mainOutEdge: oriented.mainOutEdge } : {}),
+        ...(oriented.mainInEdge !== undefined ? { mainInEdge: oriented.mainInEdge } : {})
       };
       state.devices.push(newDevice);
       state.selectedId = newDevice.id;
@@ -1872,6 +1915,7 @@ function bindToolbarSpawnEvents() {
     }
     state.spawnPreview = null;
     state.spawningTemplateKey = null;
+    state.spawnRotSteps = 0;
     draw();
   });
 }
