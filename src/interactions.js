@@ -1,5 +1,5 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
-import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECT, BOX_SELECT_LONG_PRESS_MS } from './constants.js';
+import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECTED } from './constants.js';
 import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
@@ -20,14 +20,21 @@ import {
 import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 
+// 框选批量选中不是一个需要切换进入的独立模式，是否显示它的提示纯粹看当前
+// 是否有多选内容(三个 boxSelected*Ids 集合任一非空)，因此单独抽出这个判断,
+// 供 updateHintText 和 mousedown 里"点别处清空多选"的分支共用。
+function hasBoxSelection() {
+  return state.boxSelectedDeviceIds.size > 0 || state.boxSelectedConnectionIds.size > 0 || state.boxSelectedPipeConnectionIds.size > 0;
+}
+
 export function updateHintText() {
   hintEl.textContent = state.freeBeltMode ? HINT_BELT
     : state.freePipeMode ? HINT_PIPE
-    : state.boxSelectMode ? HINT_BOX_SELECT
+    : hasBoxSelection() ? HINT_BOX_SELECTED
     : HINT_NORMAL;
   hintEl.classList.toggle('belt-mode', state.freeBeltMode);
   hintEl.classList.toggle('pipe-mode', state.freePipeMode);
-  hintEl.classList.toggle('box-select-mode', state.boxSelectMode);
+  hintEl.classList.toggle('box-select-mode', hasBoxSelection());
 }
 
 // 光标旁的轻量提示，用于端口拉线规则被拒绝时的即时反馈，一段时间后自动消失。
@@ -458,24 +465,28 @@ function resolveConduitWaypointHitAt(clientX, clientY) {
   return null;
 }
 
-// ---- 框选批量操作模式(X 键切换)：多选/批量移动/批量旋转/批量删除/复制粘贴 ----
-// 与 freeBeltMode/freePipeMode 同级的独占工具，三者互斥。核心状态机：鼠标按下
-// 时先记一个"候选态"(boxSelectPointerDown)，具体是"点击切换选中"、"长按启动
-// 批量拖动"还是"拖拽退化成框选矩形"三选一，要等后续 mousemove 越过阈值/计时器
-// 触发/mouseup 才能确定(见 handleBoxSelectMouseDown 及下面 mousemove 里的分支)。
+// ---- 框选批量操作：多选/批量移动/批量旋转/批量删除/复制粘贴 ----
+// 不是一个需要 X 键切换进入/退出的独立模式(早期版本是，长按已选中项才能触发
+// 批量拖动，实测手感别扭，已改掉)——普通模式下随时可用：按住 Ctrl 拖动鼠标拉
+// 出矩形框选，选中后直接按住已选中项拖拽就能整体移动，不需要等长按计时器。
+// 核心状态机：鼠标按下时，只有落在"已经被框选中"的设备/连线上才会记一个候选态
+// (boxSelectPointerDown)，区分接下来是"没挪动=点击切换选中"还是"挪动过阈值=
+// 立即整体拖动"，具体是哪种要等 mousemove 越过阈值或 mouseup 才能确定(见下面
+// mousedown 里对 boxSelectedDeviceIds/boxSelectedConnectionIds/boxSelectedPipeConnectionIds
+// 的命中判断，以及 mousemove 里的分支)。仍然和 freeBeltMode/freePipeMode 互斥，
+// 进入这两个画线工具会清空当前多选(见 E/Q 键入口分支)。
 
-// 撤销/退出框选模式共用的重置块：清空所有"进行中"的框选交互态。boxSelectMode
-// 本身和 clipboard 不在此列(前者是模式开关、后者是持久剪贴板数据，同 E/Q 键
-// 的 freeBeltMode/history.js 的 undo() 对这两类状态的处理方式一致)。仅本文件内
-// 使用(history.js 的 undo() 按现有风格独立内联自己的一份，不共享)。
+// 清空框选多选状态的公共重置块：点击框选集合之外的任何东西、进入画线工具、
+// 批量删除、Esc/右键都会用到。clipboard 不在此列，它是持久剪贴板数据，不是
+// "进行到一半"的交互态(同 E/Q 键的 freeBeltMode/history.js 的 undo() 对这两类
+// 状态的处理方式一致)。仅本文件内使用(history.js 的 undo() 按现有风格独立内联
+// 自己的一份，不共享)。调用后立即刷新提示胶囊文字，因为"是否有框选选中项"
+// 直接决定显示哪条提示。
 function resetBoxSelectTransientState() {
   state.boxSelectedDeviceIds = new Set();
   state.boxSelectedConnectionIds = new Set();
   state.boxSelectedPipeConnectionIds = new Set();
   state.boxSelectPointerDown = null;
-  if (state.boxSelectLongPressTimer) clearTimeout(state.boxSelectLongPressTimer);
-  state.boxSelectLongPressTimer = null;
-  state.boxSelectLongPressToken++;
   state.boxSelectMarquee = null;
   state.boxDragBeforeSnapshot = null;
   state.boxDragOrigin = null;
@@ -484,30 +495,7 @@ function resetBoxSelectTransientState() {
   state.boxDragDeltaRow = 0;
   state.pastePending = false;
   state.pastePreview = null;
-}
-
-// E/Q 键入口互相强制关闭对方进行中状态的那个重置块，X 键入口需要同样强制关闭
-// 这两个自由画线模式——内联复制一份(和 E/Q 入口目前互相内联对方重置块的写法
-// 保持一致，不引入新的跨用途共享抽象)。
-function exitFreeBeltAndPipeModes() {
-  state.freeBeltMode = false;
-  state.freeBeltStart = null;
-  state.freeBeltPreviewPts = null;
-  state.freeBeltHoverDeviceId = null;
-  state.freePipeMode = false;
-  state.freePipeStart = null;
-  state.freePipePreviewPts = null;
-  state.freePipeHoverDeviceId = null;
-  state.draggingWaypoint = null;
-  state.pendingWaypointCreate = null;
-  state.draggingPipeWaypoint = null;
-  state.pendingPipeWaypointCreate = null;
-  state.draggingDeviceId = null;
-  state.draggingDeviceBeforeSnapshot = null;
-  state.endpointDrag = null;
-  state.pipeEndpointDrag = null;
-  state.isPanning = false;
-  state.lastConduitClickCell = null;
+  updateHintText();
 }
 
 function toggleInSet(set, id) {
@@ -520,7 +508,7 @@ function boxSelectedConnIdsForNetwork(network) {
 
 // 框选批量移动/旋转时"跟着一起变"的连线集合：端点绑定在被选中设备上的连线
 // (设备一动，它自然要跟着走)，并上被显式框选中的连线本身(哪怕它两端都没绑
-// 定在被选中的设备上，用户直接选中了这条线，长按它也能单独拖动/随旋转变换)。
+// 定在被选中的设备上，用户直接选中了这条线，拖拽它也能单独移动/随旋转变换)。
 // 这个集合同时也是 brokeExistingValidConnection 的 excludeIds：这次操作导致
 // 它们变化是预期之内的直接后果，不是牵连到了别的无关连线。
 function computeBoxDragAffectedConnIds(network) {
@@ -529,60 +517,32 @@ function computeBoxDragAffectedConnIds(network) {
   return merged;
 }
 
-// ---- 鼠标按下候选态：点击 / 长按批量拖动 / 退化成框选矩形 三选一 ----
+// ---- 鼠标按下候选态：点击切换选中 / 立即整体拖动 二选一 ----
+// 只有 mousedown 命中的目标已经在框选集合里时，调用方(见下面 bindCanvasMouseEvents
+// 里设备/连线命中分支)才会调这个函数记候选态；命中不在集合内的目标不算数，
+// 直接退回普通单选/拖拽，不经过这里。
 
-function handleBoxSelectMouseDown(clientX, clientY) {
+function startGroupSelectionPointerDown(clientX, clientY, hitKind, hitId) {
   const worldPos = screenToWorld(clientX, clientY);
-  const hitDev = hitTestDevice(worldPos.x, worldPos.y);
-  let hitKind = null, hitId = null, wasSelected = false;
-  if (hitDev) {
-    hitKind = 'device';
-    hitId = hitDev.id;
-    wasSelected = state.boxSelectedDeviceIds.has(hitId);
-  } else {
-    const connResolved = resolveConduitHitAt(clientX, clientY);
-    if (connResolved) {
-      hitKind = connResolved.network;
-      hitId = connResolved.hit.conn.id;
-      wasSelected = hitKind === 'pipe'
-        ? state.boxSelectedPipeConnectionIds.has(hitId)
-        : state.boxSelectedConnectionIds.has(hitId);
-    }
-  }
   state.boxSelectPointerDown = {
     downX: clientX, downY: clientY,
     downWorldX: worldPos.x, downWorldY: worldPos.y,
-    hitKind, hitId, wasSelected
+    hitKind, hitId
   };
-  if (wasSelected) {
-    const token = ++state.boxSelectLongPressToken;
-    state.boxSelectLongPressTimer = setTimeout(() => onBoxSelectLongPressFire(token), BOX_SELECT_LONG_PRESS_MS);
-  }
-}
-
-function onBoxSelectLongPressFire(token) {
-  if (token !== state.boxSelectLongPressToken) return; // 已被 mouseup/移动阈值取消，过期回调
-  if (!state.boxSelectPointerDown) return;
-  startBoxSelectDrag();
-  draw();
 }
 
 function resolveBoxSelectClickToggle() {
   const down = state.boxSelectPointerDown;
   if (!down) return;
-  if (down.hitKind === null) {
-    state.boxSelectedDeviceIds = new Set();
-    state.boxSelectedConnectionIds = new Set();
-    state.boxSelectedPipeConnectionIds = new Set();
-  } else if (down.hitKind === 'device') {
+  if (down.hitKind === 'device') {
     toggleInSet(state.boxSelectedDeviceIds, down.hitId);
   } else if (down.hitKind === 'belt') {
     toggleInSet(state.boxSelectedConnectionIds, down.hitId);
   } else if (down.hitKind === 'pipe') {
     toggleInSet(state.boxSelectedPipeConnectionIds, down.hitId);
   }
-  if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
   state.boxSelectPointerDown = null;
+  updateHintText();
 }
 
 // ---- 框选矩形拖拽 ----
@@ -611,9 +571,12 @@ function commitBoxSelectMarquee() {
   state.boxSelectedConnectionIds = boxSelectHitConnections(rect, BELT_NETWORK);
   state.boxSelectedPipeConnectionIds = boxSelectHitConnections(rect, PIPE_NETWORK);
   state.boxSelectMarquee = null;
+  canvas.style.cursor = 'default';
+  updateHintText();
 }
 
-// ---- 长按批量拖动：镜像单设备拖拽的安全网套路，但作用于整个选区 ----
+// ---- 批量拖动(按住已选中项直接拖动触发，不需要长按)：镜像单设备拖拽的安全网
+// 套路，但作用于整个选区 ----
 
 function startBoxSelectDrag() {
   pushHistory();
@@ -644,7 +607,6 @@ function startBoxSelectDrag() {
   // 保留 boxSelectPointerDown(不清空)：它的 downWorldX/downWorldY 是这次批量拖动
   // 的位移基准点，updateBoxSelectDrag 每帧据此算整体格偏移；mousemove 的分支
   // 顺序已经把 boxDragOrigin 检查排在 boxSelectPointerDown 前面，不会互相打架。
-  if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
   canvas.style.cursor = 'grabbing';
 }
 
@@ -704,6 +666,15 @@ function commitBoxSelectDrag() {
 // (用户已确认选这种"整体转向"，代价是非正方形设备混合选中时取整可能有半格漂移)
 
 function performBoxSelectRotate() {
+  // 批量拖动进行中(boxDragOrigin 非空)时禁止旋转：拖动预览和松手落位都是靠
+  // boxDragOrigin 记录的"拖动开始前坐标" + boxDragDeltaCol/Row 现算(见
+  // effectiveGridPos/commitBoxSelectDrag)，如果这时旋转直接改写 dev.gridX/gridY，
+  // 这份快照并不知情——松手时 commitBoxSelectDrag 仍会用旧快照+偏移把位置覆盖
+  // 回去，旋转带来的整体位置变化就被吃掉了，只留下每个设备自己的朝向
+  // (rot/mainInEdge/mainOutEdge)被转了，看起来像"每个设备各转各的"而不是整体
+  // 绕包围盒中心转向(这是改过的真实 bug)。与其去同步刷新拖动快照，不如直接
+  // 禁掉，逼用户松手落位后再旋转，从根上避免这个快照过期问题。
+  if (state.boxDragOrigin) return;
   const ids = state.boxSelectedDeviceIds;
   if (ids.size === 0) return;
   const devs = state.devices.filter(d => ids.has(d.id));
@@ -908,13 +879,14 @@ function commitPaste() {
   }
   state.pastePending = false;
   state.pastePreview = null;
+  updateHintText();
 }
 
 // ---- 画布内鼠标交互：平移 / 选中 / 拖拽已有设备 ----
 
 function bindCanvasMouseEvents() {
   canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 2) return; // 右键交给 contextmenu 处理(退出自由传送带模式/框选模式/取消待粘贴)
+    if (e.button === 2) return; // 右键交给 contextmenu 处理(退出自由传送带模式/清空框选批量选中/取消待粘贴)
 
     if (state.pastePending) {
       if (e.button === 0) commitPaste();
@@ -922,9 +894,17 @@ function bindCanvasMouseEvents() {
       return;
     }
 
-    if (state.boxSelectMode) {
-      if (e.button !== 0) return;
-      handleBoxSelectMouseDown(e.clientX, e.clientY);
+    // Ctrl+左键拖拽：框选矩形，普通模式下随时可用，不需要先切换到任何"框选
+    // 模式"。矩形起点就是按下点本身(不像批量拖动候选态那样需要等移动阈值)，
+    // 因为 Ctrl 键本身已经是明确的"我要框选"意图，没有歧义要消化。命中判定/
+    // 替换选中集合的逻辑见 mouseup 里的 commitBoxSelectMarquee。
+    if (e.button === 0 && (e.ctrlKey || e.metaKey)) {
+      const worldPos = screenToWorld(e.clientX, e.clientY);
+      state.selectedId = null;
+      state.selectedConnectionId = null;
+      state.selectedPipeConnectionId = null;
+      state.boxSelectMarquee = { startWX: worldPos.x, startWY: worldPos.y, curWX: worldPos.x, curWY: worldPos.y };
+      canvas.style.cursor = 'crosshair';
       draw();
       return;
     }
@@ -1041,6 +1021,17 @@ function bindCanvasMouseEvents() {
     const hit = hitTestDevice(worldPos.x, worldPos.y);
 
     if (hit) {
+      // 命中的设备已经在框选批量选中集合里：记候选态，交给 mousemove/mouseup
+      // 判定接下来是"没挪动=点击切换选中"还是"挪动过阈值=立即整体拖动"，不
+      // 落入下面单设备拖拽的分支。
+      if (state.boxSelectedDeviceIds.has(hit.id)) {
+        startGroupSelectionPointerDown(e.clientX, e.clientY, 'device', hit.id);
+        draw();
+        return;
+      }
+      // 点了框选集合之外的设备：视为放弃当前这批多选，退回普通单选/拖拽
+      // (和大多数框选工具"点选区外的东西即清空选区"的习惯一致)。
+      if (hasBoxSelection()) resetBoxSelectTransientState();
       pushHistory();
       state.draggingDeviceBeforeSnapshot = state.history[state.history.length - 1];
       state.selectedId = hit.id;
@@ -1058,6 +1049,13 @@ function bindCanvasMouseEvents() {
 
     const connResolved = resolveConduitHitAt(e.clientX, e.clientY);
     if (connResolved) {
+      const groupSet = connResolved.network === 'pipe' ? state.boxSelectedPipeConnectionIds : state.boxSelectedConnectionIds;
+      if (groupSet.has(connResolved.hit.conn.id)) {
+        startGroupSelectionPointerDown(e.clientX, e.clientY, connResolved.network, connResolved.hit.conn.id);
+        draw();
+        return;
+      }
+      if (hasBoxSelection()) resetBoxSelectTransientState();
       state.selectedId = null;
       if (connResolved.network === 'pipe') {
         state.selectedPipeConnectionId = connResolved.hit.conn.id;
@@ -1073,6 +1071,7 @@ function bindCanvasMouseEvents() {
       return;
     }
 
+    if (hasBoxSelection()) resetBoxSelectTransientState();
     state.selectedId = null;
     state.selectedConnectionId = null;
     state.selectedPipeConnectionId = null;
@@ -1107,7 +1106,8 @@ function bindCanvasMouseEvents() {
     }
   });
 
-  // 右键：退出自由传送带/自由管道/框选模式，或取消待粘贴(阻止浏览器默认右键菜单)
+  // 右键：清空框选批量选中/退出自由传送带/自由管道模式，或取消待粘贴(阻止
+  // 浏览器默认右键菜单)
   canvas.addEventListener('contextmenu', (e) => {
     if (state.pastePending) {
       e.preventDefault();
@@ -1115,12 +1115,10 @@ function bindCanvasMouseEvents() {
       draw();
       return;
     }
-    if (state.boxSelectMode) {
+    if (hasBoxSelection() || state.boxSelectMarquee || state.boxDragOrigin) {
       e.preventDefault();
       resetBoxSelectTransientState();
-      state.boxSelectMode = false;
       canvas.style.cursor = 'default';
-      updateHintText();
       draw();
       return;
     }
@@ -1159,13 +1157,12 @@ function bindCanvasMouseEvents() {
       return;
     }
     if (state.boxSelectPointerDown) {
+      // 按在已框选中的项上，挪动超过阈值即刻整体拖动——不再有长按等待，也不会
+      // 像早期版本那样把快速拖动误判成"退化成框选矩形"(框选矩形现在只能由
+      // Ctrl+拖拽触发，和这里的"拖动已选中项"完全分开，两者不会互相打架)。
       const dx = e.clientX - state.boxSelectPointerDown.downX, dy = e.clientY - state.boxSelectPointerDown.downY;
       if (dx * dx + dy * dy > 16) {
-        if (state.boxSelectLongPressTimer) { clearTimeout(state.boxSelectLongPressTimer); state.boxSelectLongPressTimer = null; }
-        const wx = state.boxSelectPointerDown.downWorldX, wy = state.boxSelectPointerDown.downWorldY;
-        state.boxSelectPointerDown = null;
-        state.boxSelectMarquee = { startWX: wx, startWY: wy, curWX: wx, curWY: wy };
-        updateBoxSelectMarquee(e.clientX, e.clientY);
+        startBoxSelectDrag();
         draw();
       }
       return;
@@ -1503,14 +1500,15 @@ function bindKeyboardEvents() {
       return;
     }
 
-    // 复制/粘贴只在框选批量操作模式内生效，不在普通模式/自由画线模式下抢占
-    // Ctrl+C/V(这两个模式各自没有"复制"的概念)。
-    if (state.boxSelectMode && (e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+    // 复制/粘贴作用于当前框选批量选中的内容，不要求先进入某个"模式"；
+    // buildClipboardFromSelection 内部在选中集合为空时直接空跑，不需要在这里
+    // 额外判断"是否有选中内容"。
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       buildClipboardFromSelection();
       return;
     }
-    if (state.boxSelectMode && !state.pastePending && state.clipboard && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+    if (!state.pastePending && state.clipboard && (e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
       e.preventDefault();
       state.pastePending = true;
       state.pastePreview = null;
@@ -1525,12 +1523,10 @@ function bindKeyboardEvents() {
         draw();
         return;
       }
-      if (state.boxSelectMode) {
+      if (hasBoxSelection() || state.boxSelectMarquee || state.boxDragOrigin) {
         e.preventDefault();
         resetBoxSelectTransientState();
-        state.boxSelectMode = false;
         canvas.style.cursor = 'default';
-        updateHintText();
         draw();
         return;
       }
@@ -1555,7 +1551,9 @@ function bindKeyboardEvents() {
       state.freeBeltHoverDeviceId = null;
       if (state.freeBeltMode) {
         // 进入布线模式即为独占工具：清掉其它可能残留的交互状态，包括另一个
-        // 画线工具(自由管道模式)和框选批量操作模式的进行中状态——三者互斥。
+        // 画线工具(自由管道模式)和框选批量选中——两个画线工具互斥，框选批量
+        // 选中虽然不是独立模式，但和画线工具同时存在没有意义，进入画线工具
+        // 一律清空。
         state.freePipeMode = false;
         state.freePipeStart = null;
         state.freePipePreviewPts = null;
@@ -1575,7 +1573,6 @@ function bindKeyboardEvents() {
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
         resetBoxSelectTransientState();
-        state.boxSelectMode = false;
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1592,8 +1589,7 @@ function bindKeyboardEvents() {
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
       if (state.freePipeMode) {
-        // 镜像上面的 E 键处理，且互斥清空自由传送带模式和框选批量操作模式的
-        // 进行中状态。
+        // 镜像上面的 E 键处理，且同样清空自由传送带模式和框选批量选中。
         state.freeBeltMode = false;
         state.freeBeltStart = null;
         state.freeBeltPreviewPts = null;
@@ -1613,28 +1609,6 @@ function bindKeyboardEvents() {
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
         resetBoxSelectTransientState();
-        state.boxSelectMode = false;
-        canvas.style.cursor = 'crosshair';
-      } else {
-        canvas.style.cursor = 'default';
-      }
-      updateHintText();
-      draw();
-      return;
-    }
-
-    if (e.key === 'x' || e.key === 'X') {
-      e.preventDefault();
-      state.boxSelectMode = !state.boxSelectMode;
-      resetBoxSelectTransientState();
-      if (state.boxSelectMode) {
-        // 进入框选模式即为独占工具：强制退出另外两个自由画线模式(镜像 E/Q 入口
-        // 互相强制关闭对方的写法)，并清空普通模式下的单选态。
-        exitFreeBeltAndPipeModes();
-        state.selectedId = null;
-        state.selectedConnectionId = null;
-        state.selectedPipeConnectionId = null;
-        state.hoveredWarningId = null;
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1645,7 +1619,7 @@ function bindKeyboardEvents() {
     }
 
     if (e.key === 'r' || e.key === 'R') {
-      if (state.boxSelectMode && state.boxSelectedDeviceIds.size > 0) {
+      if (state.boxSelectedDeviceIds.size > 0) {
         e.preventDefault();
         performBoxSelectRotate();
         return;
@@ -1694,7 +1668,7 @@ function bindKeyboardEvents() {
     }
 
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
-    if (state.boxSelectMode && (state.boxSelectedDeviceIds.size > 0 || state.boxSelectedConnectionIds.size > 0 || state.boxSelectedPipeConnectionIds.size > 0)) {
+    if (hasBoxSelection()) {
       e.preventDefault();
       performBoxSelectDelete();
       return;

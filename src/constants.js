@@ -32,10 +32,12 @@ export const BELT_EDGE_COLOR = 'rgba(120, 120, 120, 0.45)';
 export const HISTORY_LIMIT = 30;
 
 // ---- 快捷键提示：放在角落的小胶囊，只保留核心快捷键；切换模式时内容跟着换 ----
-export const HINT_NORMAL = '[左键拖拽] 放置建筑　|　[E] 传送带　|　[Q] 管道　|　[X] 框选　|　[R] 旋转　|　[H] 供电范围　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
+export const HINT_NORMAL = '[左键拖拽] 放置建筑　|　[Ctrl+拖拽] 框选　|　[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[H] 供电范围　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_BELT = '[左键] 拉传送带　|　[右键/E] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_PIPE = '[左键] 拉管道　|　[右键/Q] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
-export const HINT_BOX_SELECT = '[左键] 框选/点选　|　[长按已选中项] 批量移动　|　[R] 旋转　|　[Delete] 删除　|　[Ctrl+C/V] 复制粘贴　|　[右键/X/Esc] 退出';
+// 有框选批量选中项时替换掉 HINT_NORMAL(不是独立模式，纯粹是"当前选中了多个
+// 东西"这一状态下的操作提示，见 interactions.js 的 updateHintText)。
+export const HINT_BOX_SELECTED = '[拖拽已选中项] 批量移动　|　[R] 旋转　|　[Delete] 删除　|　[Ctrl+C/V] 复制粘贴　|　[点击其它位置/Esc] 取消选中';
 
 // ---- 传送带调色板：白色基调地图上的半透明琥珀色条带，选中态更饱和/更不透明，
 // 失效态复用红色警示语义 ----
@@ -54,15 +56,11 @@ export const PIPE_ACCENT = 'rgba(2, 136, 209, 0.85)';
 // pathfinding.js 的 NODE_COLOR)，不再用颜色区分四种节点，靠 1x1 占地 + "汇"/"分"
 // 标签本身分辨。
 
-// 框选批量操作模式(X)的强调色：与 freeBeltMode 的绿色、freePipeMode 的蓝色都
-// 不同色相——这是第三个并列的独占工具模式，复用任一现有色系都会让人误以为框选
-// 和画传送带/画管道是同一类操作。选紫色系，不和红色警示/黄色选中冲突。
+// 框选矩形(Ctrl+拖拽)的强调色：与 freeBeltMode 的绿色、freePipeMode 的蓝色都
+// 不同色相——虽然框选本身不是一个独占工具模式，但拖矩形这个手势本身仍然需要
+// 一个和已有工具区分开的强调色，避免让人误以为在画传送带/画管道。选紫色系，
+// 不和红色警示/黄色选中冲突。
 export const BOX_SELECT_ACCENT = 'rgba(94, 53, 177, 0.85)';
-
-// 长按判定时长(ms)：按住已选中项超过这个时长才触发批量拖动，短于此松手则是
-// 切换选中态。项目里第一个基于经过时间(而非移动距离)的手势常量，取一个不容易
-// 误触又不会显得迟钝的经验值。
-export const BOX_SELECT_LONG_PRESS_MS = 450;
 
 // ---- 端口颜色：只按"传送带口/管道口"这一个维度区分，不再用输入/输出/已连接
 // 三种色相——已连接状态改用不透明度表达(未连接半透明、已连接不透明)，颜色
@@ -83,7 +81,7 @@ export const WARNING_COLOR = '#ff1744';
 
 // ---- 供电覆盖范围叠层(H 键全局开关 + 拖拽供电桩/中继器时的落地预览)：半透明
 // 黄橙色，是常驻/大面积的信息叠加层，不需要抢眼，只需要能看清边界；特意不用
-// 紫色，避免和 BOX_SELECT_ACCENT(框选模式强调色)撞色相、也避免让人误以为这是
+// 紫色，避免和 BOX_SELECT_ACCENT(框选矩形强调色)撞色相、也避免让人误以为这是
 // 另一种"操作模式"而非纯信息展示。----
 export const POWER_RANGE_FILL = 'rgba(255, 193, 7, 0.12)';
 export const POWER_RANGE_STROKE = 'rgba(255, 160, 0, 0.55)';

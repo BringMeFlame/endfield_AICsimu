@@ -56,15 +56,12 @@ export function undo() {
   state.spawningTemplateKey = null;
   state.isPanning = false;
 
-  // 框选批量操作模式的进行中状态同样要清空(boxSelectMode 本身和 clipboard 除外，
-  // 理由同上：前者是模式开关，后者是持久剪贴板数据，都不是"进行到一半"的交互态)。
+  // 框选批量操作的进行中状态同样要清空(clipboard 除外，它是持久剪贴板数据，
+  // 不是"进行到一半"的交互态)。
   state.boxSelectedDeviceIds = new Set();
   state.boxSelectedConnectionIds = new Set();
   state.boxSelectedPipeConnectionIds = new Set();
   state.boxSelectPointerDown = null;
-  if (state.boxSelectLongPressTimer) clearTimeout(state.boxSelectLongPressTimer);
-  state.boxSelectLongPressTimer = null;
-  state.boxSelectLongPressToken++;
   state.boxSelectMarquee = null;
   state.boxDragBeforeSnapshot = null;
   state.boxDragOrigin = null;

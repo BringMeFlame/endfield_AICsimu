@@ -708,8 +708,8 @@ function drawSpawnPreview() {
   ctx.restore();
 }
 
-// 框选批量操作模式下正在拖拽中的矩形选框：仿 drawSpawnPreview 的虚线矩形手感，
-// 用框选模式自己的紫色强调色(BOX_SELECT_ACCENT)，和绿色(传送带)/蓝色(管道)/
+// Ctrl+拖拽 框选时正在拖拽中的矩形选框：仿 drawSpawnPreview 的虚线矩形手感，
+// 用框选矩形自己的紫色强调色(BOX_SELECT_ACCENT)，和绿色(传送带)/蓝色(管道)/
 // 黄色(选中)/红色(警示)都区分开——这是"框选操作本身进行中"的视觉，不是"选中"
 // 本身(那部分复用现有的黄色选中态，见 drawDevices/drawConnections)。
 function drawBoxSelectMarquee() {

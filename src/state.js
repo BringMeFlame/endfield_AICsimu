@@ -69,37 +69,32 @@ export const state = {
   freePipePreviewPts: null,
   freePipeHoverDeviceId: null,
 
-  // ---- 框选批量操作模式(X 键切换)：拖出矩形框选/点选多个设备与连线，批量移动/
-  // 旋转/删除，Ctrl+C/V 复制粘贴——与 freeBeltMode/freePipeMode 同级的独占工具，
-  // 三者互斥，进入其中一个都要清空另外两个的进行中状态(见 interactions.js 里
-  // X/E/Q 三个键入口分支)。----
-  boxSelectMode: false,
+  // ---- 框选批量操作：普通模式下随时可用的多选机制，不是一个需要切换进入/退出
+  // 的独立工具模式(早期版本用 X 键切换专属"框选模式"，长按已选中项才能触发批量
+  // 拖动，实际用起来手感很别扭——按住 Ctrl 拖出矩形是唯一的框选入口，选中之后
+  // 直接按住拖拽已选中项就能整体移动，不需要等长按计时器，改动详见
+  // interactions.js 里 Ctrl+mousedown 分支和 boxSelectPointerDown 的说明)。
+  // 仍然和 freeBeltMode/freePipeMode 互斥：进入这两个画线工具会清空当前多选
+  // (见 interactions.js 的 E/Q 键入口分支)。
 
   // 当前框选批量选中的设备/传送带连线/管道连线 id 集合。这是独立于普通模式下
   // selectedId/selectedConnectionId/selectedPipeConnectionId(单选)的第二套选中
-  // 机制，两者只在各自的模式下生效，互不混用；退出框选模式(X 再次/右键/Esc)
-  // 时清空。
+  // 机制，两者可以共存(渲染上复用同一套"选中态"黄色高亮，见 render.js)；点击
+  // 框选集合之外的任何东西会清空这套多选集合，退回普通单选。
   boxSelectedDeviceIds: new Set(),
   boxSelectedConnectionIds: new Set(),
   boxSelectedPipeConnectionIds: new Set(),
 
-  // 鼠标按下时的候选态：按在某个已选中项上时，最终会是"松手前不再移动=切换
-  // 选中"、"按住不放够时长=长按启动批量拖动"、"按下后先移动=退化成框选拖拽"
-  // 三选一，具体是哪种要等 mousemove 越过阈值或计时器触发或 mouseup 才能确定，
-  // 这里先记下按下时的信息供三处后续判定共用。落在空白处(hitKind=null)也走
-  // 同一套候选态，用于区分"单纯点击空白=清空选中"和"拖拽空白=开始框选"。
-  boxSelectPointerDown: null, // { downX, downY, downWorldX, downWorldY, hitKind: 'device'|'belt'|'pipe'|null, hitId, wasSelected }
-
-  // 长按计时器(setTimeout 句柄)：按在已选中项上时启动，移动超过阈值/松手时都
-  // 要 clearTimeout 取消。token 只在自己仍是"当前这次按下"时才有效，避免极端
-  // 情况下计时器回调在 mouseup 已经处理完之后才触发的竞态(镜像
-  // showCursorTooltip 用时间戳 until 防止过期回调生效的写法)。
-  boxSelectLongPressTimer: null,
-  boxSelectLongPressToken: 0,
+  // 鼠标按下时的候选态：只在按下的位置命中"已经在框选集合里"的设备/连线时才会
+  // 记录，用于区分"松手前不再移动=点击切换选中"和"按下后移动=立即整体拖动"
+  // 二选一，具体是哪种要等 mousemove 越过阈值或 mouseup 才能确定。命中不在框选
+  // 集合内的目标(或空白处)不走这套候选态，直接按普通单选/拖拽/平移处理。
+  boxSelectPointerDown: null, // { downX, downY, downWorldX, downWorldY, hitKind: 'device'|'belt'|'pipe', hitId }
 
   // 正在拖拽中的框选矩形(世界坐标，起止点未做 min/max 归一化，渲染/命中判定
-  // 时现算)。mouseup 时用它和设备/连线做相交测试，整体替换(不是叠加)当前选中
-  // 集合。
+  // 时现算)。只能由按住 Ctrl 拖动鼠标触发(mousedown 时立即以按下点为起止点建
+  // 好，随 mousemove 更新)，mouseup 时用它和设备/连线做相交测试，整体替换(不是
+  // 叠加)当前选中集合。
   boxSelectMarquee: null, // { startWX, startWY, curWX, curWY }
 
   // 批量拖动(长按已选中项触发)状态。beforeSnapshot 镜像单设备拖拽的
