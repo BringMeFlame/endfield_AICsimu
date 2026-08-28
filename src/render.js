@@ -1,5 +1,5 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PORT_HOVER_FILL_BELT, PORT_HOVER_FILL_PIPE, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, INVALID_COLOR, INVALID_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PORT_HOVER_FILL_BELT, PORT_HOVER_FILL_PIPE, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
 import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeOutOfBoundsIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
@@ -341,9 +341,15 @@ function angleForDir(dir) {
 // 内部填充始终完全不透明(不能被半透明的斜纹选中态/网格线透出来，那样线条会
 // 显得很乱)；"是否已连接"改成只体现在边框描边的不透明度上(未连接半透明、
 // 已连接不透明)，不再对整个箭头(含填充)一起降低透明度。
-function drawPortMarker(p, connected, flowDir, hovered) {
+// portState 三态：null(常态) / 'hover'(空闲态悬停在可拖拽改接的端口上，见
+// interactions.js 的 Endpoint Re-attach，输入输出两侧都支持) / 'target'(正在
+// 拖拽一段连线、划过的候选目标端口预览)。'hover' 用实心细线描边+亮色填充；
+// 'target' 只换填充色、描边粗细和常态完全一致(不代表"这里能发起拖拽"，纯粹
+// 提示"松手会接到这里")。
+function drawPortMarker(p, connected, flowDir, portState) {
   const screen = worldToScreen(p.x, p.y);
   const color = p.portKind === 'pipe' ? PIPE_PORT_COLOR : BELT_PORT_COLOR;
+  const hoverFill = p.portKind === 'pipe' ? PORT_HOVER_FILL_PIPE : PORT_HOVER_FILL_BELT;
   const s = scaled(8);
 
   ctx.save();
@@ -356,43 +362,46 @@ function drawPortMarker(p, connected, flowDir, hovered) {
   ctx.closePath();
 
   ctx.globalAlpha = 1;
-  // 悬停("可拖拽改接"提示，见 interactions.js 的 Endpoint Re-attach)时填充
-  // 换成亮色(传送带黄/管道蓝)，替代常态的白色，和常态视觉明显区分。
-  ctx.fillStyle = hovered
-    ? (p.portKind === 'pipe' ? PORT_HOVER_FILL_PIPE : PORT_HOVER_FILL_BELT)
-    : PORT_FILL_COLOR;
+  // hover 和 target 都用亮色填充(传送带黄/管道蓝)取代常态白色；两者的区别
+  // 只体现在下面的描边粗细上。
+  ctx.fillStyle = portState ? hoverFill : PORT_FILL_COLOR;
   ctx.fill();
 
-  ctx.globalAlpha = connected ? 1 : 0.55; // hovered 时 connected 恒为 true，不冲突
-  // 悬停时描边统一改深色虚线，不用 color 本身(管道口的蓝色描边叠在同色蓝色
-  // 填充上会失去对比度)。
-  ctx.strokeStyle = hovered ? '#111111' : color;
+  ctx.globalAlpha = connected ? 1 : 0.55; // hover/target 时 connected 恒为 true，不冲突
+  // hover(空闲态"这里能拖")用统一深色细线，不用 portKind 本身的颜色(蓝色
+  // 描边叠蓝色填充没有对比度)；target(拖拽中候选落点预览)不改描边，保持和
+  // 常态完全一致的粗细/颜色，只有 fillStyle 变了。
+  ctx.strokeStyle = portState === 'hover' ? '#111111' : color;
   // 缩小地图时如果单纯乘 state.scale，线宽会跟着无限变细直到肉眼难辨——这里
-  // 设一个不随缩放继续变薄的下限(2px)，保证缩得再小箭头依旧看得清；放大时仍然
+  // 设一个不随缩放继续变薄的下限，保证缩得再小箭头依旧看得清；放大时仍然
   // 正常跟着 scaled() 一起变粗。
-  ctx.lineWidth = Math.max(2, scaled(3.2));
+  ctx.lineWidth = portState === 'hover' ? Math.max(1, scaled(1.4)) : Math.max(2, scaled(3.2));
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  if (hovered) ctx.setLineDash([scaled(1.6), scaled(1.3)]);
   ctx.stroke();
-  if (hovered) ctx.setLineDash([]);
   ctx.restore();
 }
 
 function drawDevicePorts(dev, pos) {
   const ports = getDevicePorts(dev, pos);
   // "是否已连接"必须按 portKind 查对应网络，否则反应池的管道口会永远查到
-  // 传送带连线表、显示成"未连接"。悬停高亮只针对输入口(唯一支持拖拽改接的
-  // 端口类型，见 state.hoveredInputPort 的说明)，输出口恒不高亮。
-  const hp = state.hoveredInputPort;
+  // 传送带连线表、显示成"未连接"。hoveredPort/dragTargetPort 现在输入输出
+  // 两侧都要判(见 state.js 的字段说明)，target 优先于 hover(理论上不会
+  // 同时命中：一个只在空闲态算，一个只在拖拽中算)。
+  const hp = state.hoveredPort;
+  const tp = state.dragTargetPort;
+  const stateFor = (p, portType) => {
+    if (tp && tp.deviceId === dev.id && tp.index === p.index && tp.portKind === p.portKind && tp.portType === portType) return 'target';
+    if (hp && hp.deviceId === dev.id && hp.index === p.index && hp.portKind === p.portKind && hp.portType === portType) return 'hover';
+    return null;
+  };
   for (const p of ports.inputs) {
     const connected = p.portKind === 'pipe' ? isPipeInputPortUsed(dev.id, p.index) : isInputPortUsed(dev.id, p.index);
-    const hovered = !!hp && hp.deviceId === dev.id && hp.index === p.index && hp.portKind === p.portKind;
-    drawPortMarker(p, connected, p.dir, hovered);
+    drawPortMarker(p, connected, p.dir, stateFor(p, 'input'));
   }
   for (const p of ports.outputs) {
     const connected = p.portKind === 'pipe' ? isPipeOutputPortUsed(dev.id, p.index) : isOutputPortUsed(dev.id, p.index);
-    drawPortMarker(p, connected, p.dir, false);
+    drawPortMarker(p, connected, p.dir, stateFor(p, 'output'));
   }
 }
 
@@ -465,9 +474,11 @@ function drawConnectionPath(c, opts) {
   const path = buildRoundedScreenPath2D(screenPoints, scaled(BELT_CORNER_RADIUS));
 
   // 无效路径(拖拽途经点/设备到无法计算出直角路径的位置)：用半透明红色警示预览，
-  // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带/管道。
+  // 与设备重叠时的红色警告色呼应，而不是渲染成一条正常的传送带/管道；选中态
+  // 同样调更饱和/不透明，和下面 pipe/belt 分支是同一种写法(之前遗漏了这一条，
+  // 导致选中的不成立连线和未选中的完全看不出区别)。
   let color;
-  if (c.invalid) color = 'rgba(255, 23, 68, 0.55)';
+  if (c.invalid) color = opts.selected ? INVALID_COLOR_SELECTED : INVALID_COLOR;
   else if (isPipe) color = opts.selected ? PIPE_COLOR_SELECTED : PIPE_COLOR;
   else color = opts.selected ? BELT_COLOR_SELECTED : BELT_COLOR;
 

@@ -253,6 +253,12 @@ function updateFreePreview(ui, hoverClientX, hoverClientY) {
   const worldPos = screenToWorld(hoverClientX, hoverClientY);
   const hoverInPortRaw = findPortAt(hoverClientX, hoverClientY, 'input', ui.portKind);
   const hoverInPort = hoverInPortRaw && !ui.isInputPortUsed(hoverInPortRaw.deviceId, hoverInPortRaw.index) ? hoverInPortRaw : null;
+  // 划过候选目标端口时实时预览填色(见 render.js drawPortMarker 的 'target' 态)；
+  // 新连线只能落在输入口上，portType 恒为 'input'。每次调用都无条件刷新，
+  // 天然自愈，不需要额外的清空逻辑。
+  state.dragTargetPort = hoverInPort
+    ? { deviceId: hoverInPort.deviceId, index: hoverInPort.index, portKind: ui.portKind, portType: 'input' }
+    : null;
   if (!findPortAt(hoverClientX, hoverClientY, 'output', ui.portKind) && !hoverInPortRaw) {
     const hovered = hitTestDevice(worldPos.x, worldPos.y);
     ui.setHoverDeviceId(hovered ? hovered.id : null);
@@ -955,15 +961,39 @@ function bindCanvasMouseEvents() {
     }
 
     // 普通模式下，按住已连接的输入口(传送带/管道末端箭头)可以把这段线的末端拖到
-    // 该设备或画面上其它设备的另一个可用输入口上，实时重新寻路(Endpoint Re-attach)。
-    // 管道口精确命中优先于传送带口(端口是 8px 半径的精确点命中，两个不同设备的
-    // 端口之间几乎不会真正视觉重叠，不需要接入下面的重叠循环切换记忆)。
+    // 该设备或画面上其它设备的另一个可用输入口上，实时重新寻路(Endpoint Re-attach)；
+    // 按住已连接的输出口同理可以把这段线的起点改接到别的输出口(对称版本，见
+    // state.outputEndpointDrag/pipeOutputEndpointDrag)。管道口精确命中优先于
+    // 传送带口，输出口判定优先于输入口判定(和 resolveFreeStartClick"起点默认判
+    // 输出口"的直觉一致)——端口是 8px 半径的精确点命中，两个不同设备/不同类型
+    // 的端口之间几乎不会真正视觉重叠，不需要接入下面的重叠循环切换记忆。
+    const outPipePortHit = findPortAt(e.clientX, e.clientY, 'output', 'pipe');
+    if (outPipePortHit && isPipeOutputPortUsed(outPipePortHit.deviceId, outPipePortHit.index)) {
+      const conn = state.pipeConnections.find(c => c.fromDeviceId === outPipePortHit.deviceId && c.fromPort === outPipePortHit.index);
+      if (conn) {
+        pushHistory();
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
+        state.pipeOutputEndpointDrag = { connId: conn.id, originalFromDeviceId: conn.fromDeviceId, originalFromPort: conn.fromPort };
+        conn.fromDeviceId = null;
+        conn.fromPort = null;
+        const dropWorld = screenToWorld(e.clientX, e.clientY);
+        conn.fromCell = worldToCell(dropWorld.x, dropWorld.y);
+        recomputeAllPipeConnections();
+        state.selectedPipeConnectionId = conn.id;
+        state.selectedConnectionId = null;
+        state.selectedId = null;
+        draw();
+        return;
+      }
+    }
     const inPipePortHit = findPortAt(e.clientX, e.clientY, 'input', 'pipe');
     if (inPipePortHit && isPipeInputPortUsed(inPipePortHit.deviceId, inPipePortHit.index)) {
       const conn = state.pipeConnections.find(c => c.toDeviceId === inPipePortHit.deviceId && c.toPort === inPipePortHit.index);
       if (conn) {
         pushHistory();
-        state.hoveredInputPort = null;
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
         state.pipeEndpointDrag = { connId: conn.id, originalToDeviceId: conn.toDeviceId, originalToPort: conn.toPort };
         conn.toDeviceId = null;
         conn.toPort = null;
@@ -977,12 +1007,33 @@ function bindCanvasMouseEvents() {
         return;
       }
     }
+    const outPortHit = findPortAt(e.clientX, e.clientY, 'output', 'belt');
+    if (outPortHit && isOutputPortUsed(outPortHit.deviceId, outPortHit.index)) {
+      const conn = state.connections.find(c => c.fromDeviceId === outPortHit.deviceId && c.fromPort === outPortHit.index);
+      if (conn) {
+        pushHistory();
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
+        state.outputEndpointDrag = { connId: conn.id, originalFromDeviceId: conn.fromDeviceId, originalFromPort: conn.fromPort };
+        conn.fromDeviceId = null;
+        conn.fromPort = null;
+        const dropWorld = screenToWorld(e.clientX, e.clientY);
+        conn.fromCell = worldToCell(dropWorld.x, dropWorld.y);
+        recomputeAllConnections();
+        state.selectedConnectionId = conn.id;
+        state.selectedPipeConnectionId = null;
+        state.selectedId = null;
+        draw();
+        return;
+      }
+    }
     const inPortHit = findPortAt(e.clientX, e.clientY, 'input', 'belt');
     if (inPortHit && isInputPortUsed(inPortHit.deviceId, inPortHit.index)) {
       const conn = state.connections.find(c => c.toDeviceId === inPortHit.deviceId && c.toPort === inPortHit.index);
       if (conn) {
         pushHistory();
-        state.hoveredInputPort = null;
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
         state.endpointDrag = { connId: conn.id, originalToDeviceId: conn.toDeviceId, originalToPort: conn.toPort };
         conn.toDeviceId = null;
         conn.toPort = null;
@@ -1187,6 +1238,11 @@ function bindCanvasMouseEvents() {
         const worldPos = screenToWorld(e.clientX, e.clientY);
         conn.toCell = worldToCell(worldPos.x, worldPos.y);
         recomputeAllPipeConnections();
+        // 候选目标端口实时预览(只做命中检测，不解析/寻路，完整解析留给 mouseup)。
+        const candidate = findPortAt(e.clientX, e.clientY, 'input', 'pipe');
+        state.dragTargetPort = (candidate && !isPipeInputPortUsed(candidate.deviceId, candidate.index) && candidate.deviceId !== conn.fromDeviceId)
+          ? { deviceId: candidate.deviceId, index: candidate.index, portKind: 'pipe', portType: 'input' }
+          : null;
         draw();
       }
       return;
@@ -1197,6 +1253,38 @@ function bindCanvasMouseEvents() {
         const worldPos = screenToWorld(e.clientX, e.clientY);
         conn.toCell = worldToCell(worldPos.x, worldPos.y);
         recomputeAllConnections();
+        const candidate = findPortAt(e.clientX, e.clientY, 'input', 'belt');
+        state.dragTargetPort = (candidate && !isInputPortUsed(candidate.deviceId, candidate.index) && candidate.deviceId !== conn.fromDeviceId)
+          ? { deviceId: candidate.deviceId, index: candidate.index, portKind: 'belt', portType: 'input' }
+          : null;
+        draw();
+      }
+      return;
+    }
+    if (state.pipeOutputEndpointDrag) {
+      const conn = state.pipeConnections.find(c => c.id === state.pipeOutputEndpointDrag.connId);
+      if (conn) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        conn.fromCell = worldToCell(worldPos.x, worldPos.y);
+        recomputeAllPipeConnections();
+        const candidate = findPortAt(e.clientX, e.clientY, 'output', 'pipe');
+        state.dragTargetPort = (candidate && !isPipeOutputPortUsed(candidate.deviceId, candidate.index) && candidate.deviceId !== conn.toDeviceId)
+          ? { deviceId: candidate.deviceId, index: candidate.index, portKind: 'pipe', portType: 'output' }
+          : null;
+        draw();
+      }
+      return;
+    }
+    if (state.outputEndpointDrag) {
+      const conn = state.connections.find(c => c.id === state.outputEndpointDrag.connId);
+      if (conn) {
+        const worldPos = screenToWorld(e.clientX, e.clientY);
+        conn.fromCell = worldToCell(worldPos.x, worldPos.y);
+        recomputeAllConnections();
+        const candidate = findPortAt(e.clientX, e.clientY, 'output', 'belt');
+        state.dragTargetPort = (candidate && !isOutputPortUsed(candidate.deviceId, candidate.index) && candidate.deviceId !== conn.toDeviceId)
+          ? { deviceId: candidate.deviceId, index: candidate.index, portKind: 'belt', portType: 'output' }
+          : null;
         draw();
       }
       return;
@@ -1283,25 +1371,30 @@ function bindCanvasMouseEvents() {
       const nextHoverId = iconHit ? iconHit.deviceId : null;
       state.hoveredWarningId = iconHit;
 
-      // 悬停在"已连接、可拖拽改接"的输入口上时给出专属高亮(见 drawPortMarker
-      // 的 hovered 参数)，光标改普通指针(不是抓手)，和"悬停在设备本体上可整体
-      // 拖动"的抓手区分开。命中优先级镜像 mousedown 里 Endpoint Re-attach 判定
-      // 的顺序：管道口先于传送带口。
+      // 悬停在"已连接、可拖拽改接"的端口(输入口或输出口)上时给出专属高亮(见
+      // drawPortMarker 的 portState 参数)，光标改普通指针(不是抓手)，和"悬停在
+      // 设备本体上可整体拖动"的抓手区分开。命中优先级镜像 mousedown 里
+      // Endpoint Re-attach 判定的顺序：管道输出 → 管道输入 → 传送带输出 →
+      // 传送带输入。
       let hoveredPort = null;
       if (!iconHit) {
-        const pipeHit = findPortAt(e.clientX, e.clientY, 'input', 'pipe');
-        if (pipeHit && isPipeInputPortUsed(pipeHit.deviceId, pipeHit.index)) {
-          hoveredPort = { deviceId: pipeHit.deviceId, index: pipeHit.index, portKind: 'pipe' };
-        } else {
-          const beltHit = findPortAt(e.clientX, e.clientY, 'input', 'belt');
-          if (beltHit && isInputPortUsed(beltHit.deviceId, beltHit.index)) {
-            hoveredPort = { deviceId: beltHit.deviceId, index: beltHit.index, portKind: 'belt' };
-          }
+        const pipeOutHit = findPortAt(e.clientX, e.clientY, 'output', 'pipe');
+        const pipeInHit = findPortAt(e.clientX, e.clientY, 'input', 'pipe');
+        const beltOutHit = findPortAt(e.clientX, e.clientY, 'output', 'belt');
+        const beltInHit = findPortAt(e.clientX, e.clientY, 'input', 'belt');
+        if (pipeOutHit && isPipeOutputPortUsed(pipeOutHit.deviceId, pipeOutHit.index)) {
+          hoveredPort = { deviceId: pipeOutHit.deviceId, index: pipeOutHit.index, portKind: 'pipe', portType: 'output' };
+        } else if (pipeInHit && isPipeInputPortUsed(pipeInHit.deviceId, pipeInHit.index)) {
+          hoveredPort = { deviceId: pipeInHit.deviceId, index: pipeInHit.index, portKind: 'pipe', portType: 'input' };
+        } else if (beltOutHit && isOutputPortUsed(beltOutHit.deviceId, beltOutHit.index)) {
+          hoveredPort = { deviceId: beltOutHit.deviceId, index: beltOutHit.index, portKind: 'belt', portType: 'output' };
+        } else if (beltInHit && isInputPortUsed(beltInHit.deviceId, beltInHit.index)) {
+          hoveredPort = { deviceId: beltInHit.deviceId, index: beltInHit.index, portKind: 'belt', portType: 'input' };
         }
       }
-      const prevPortKey = state.hoveredInputPort && `${state.hoveredInputPort.deviceId}:${state.hoveredInputPort.index}:${state.hoveredInputPort.portKind}`;
-      const nextPortKey = hoveredPort && `${hoveredPort.deviceId}:${hoveredPort.index}:${hoveredPort.portKind}`;
-      state.hoveredInputPort = hoveredPort;
+      const prevPortKey = state.hoveredPort && `${state.hoveredPort.deviceId}:${state.hoveredPort.index}:${state.hoveredPort.portKind}:${state.hoveredPort.portType}`;
+      const nextPortKey = hoveredPort && `${hoveredPort.deviceId}:${hoveredPort.index}:${hoveredPort.portKind}:${hoveredPort.portType}`;
+      state.hoveredPort = hoveredPort;
 
       const worldPos = screenToWorld(e.clientX, e.clientY);
       canvas.style.cursor = iconHit ? 'help' : hoveredPort ? 'default' : (hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default');
@@ -1367,6 +1460,7 @@ function bindCanvasMouseEvents() {
         }
       }
       state.pipeEndpointDrag = null;
+      state.dragTargetPort = null;
       draw();
       return;
     }
@@ -1416,6 +1510,99 @@ function bindCanvasMouseEvents() {
         }
       }
       state.endpointDrag = null;
+      state.dragTargetPort = null;
+      draw();
+      return;
+    }
+    if (state.pipeOutputEndpointDrag) {
+      const conn = state.pipeConnections.find(c => c.id === state.pipeOutputEndpointDrag.connId);
+      if (conn) {
+        let target = null;
+        const portHit = findPortAt(e.clientX, e.clientY, 'output', 'pipe');
+        if (portHit && !isPipeOutputPortUsed(portHit.deviceId, portHit.index) && portHit.deviceId !== conn.toDeviceId) {
+          target = { deviceId: portHit.deviceId, index: portHit.index };
+        } else {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+          if (hitDev && hitDev.id !== conn.toDeviceId) {
+            const pos = effectiveGridPos(hitDev);
+            const avail = getDevicePorts(hitDev, pos).outputs.filter(p => p.portKind === 'pipe' && !isPipeOutputPortUsed(hitDev.id, p.index));
+            if (avail.length) {
+              const blocked = buildBlockedSet(PIPE_NETWORK);
+              const pipeOccupancy = buildPipeOccupancy(conn.id);
+              const toResolved = resolveConnEndpoint(conn.toDeviceId, conn.toPort, conn.toCell, false);
+              const best = toResolved
+                ? pickBestPort(avail, toResolved.cellCol, toResolved.cellRow, toResolved.dir, true, blocked, pipeOccupancy, PIPE_NETWORK)
+                : avail[0];
+              if (best) target = { deviceId: hitDev.id, index: best.index };
+            }
+          }
+        }
+        if (target) {
+          conn.fromDeviceId = target.deviceId;
+          conn.fromPort = target.index;
+          conn.fromCell = null;
+        } else {
+          conn.fromDeviceId = state.pipeOutputEndpointDrag.originalFromDeviceId;
+          conn.fromPort = state.pipeOutputEndpointDrag.originalFromPort;
+          conn.fromCell = null;
+        }
+        recomputeAllPipeConnections();
+        if (target && conn.invalid) {
+          conn.fromDeviceId = state.pipeOutputEndpointDrag.originalFromDeviceId;
+          conn.fromPort = state.pipeOutputEndpointDrag.originalFromPort;
+          conn.fromCell = null;
+          recomputeAllPipeConnections();
+        }
+      }
+      state.pipeOutputEndpointDrag = null;
+      state.dragTargetPort = null;
+      draw();
+      return;
+    }
+    if (state.outputEndpointDrag) {
+      const conn = state.connections.find(c => c.id === state.outputEndpointDrag.connId);
+      if (conn) {
+        let target = null;
+        const portHit = findPortAt(e.clientX, e.clientY, 'output', 'belt');
+        if (portHit && !isOutputPortUsed(portHit.deviceId, portHit.index) && portHit.deviceId !== conn.toDeviceId) {
+          target = { deviceId: portHit.deviceId, index: portHit.index };
+        } else {
+          const worldPos = screenToWorld(e.clientX, e.clientY);
+          const hitDev = hitTestDevice(worldPos.x, worldPos.y);
+          if (hitDev && hitDev.id !== conn.toDeviceId) {
+            const pos = effectiveGridPos(hitDev);
+            const avail = getDevicePorts(hitDev, pos).outputs.filter(p => p.portKind === 'belt' && !isOutputPortUsed(hitDev.id, p.index));
+            if (avail.length) {
+              const blocked = buildBlockedSet(BELT_NETWORK);
+              const beltOccupancy = buildBeltOccupancy(conn.id);
+              const toResolved = resolveConnEndpoint(conn.toDeviceId, conn.toPort, conn.toCell, false);
+              const best = toResolved
+                ? pickBestPort(avail, toResolved.cellCol, toResolved.cellRow, toResolved.dir, true, blocked, beltOccupancy, BELT_NETWORK)
+                : avail[0];
+              if (best) target = { deviceId: hitDev.id, index: best.index };
+            }
+          }
+        }
+        if (target) {
+          conn.fromDeviceId = target.deviceId;
+          conn.fromPort = target.index;
+          conn.fromCell = null;
+        } else {
+          conn.fromDeviceId = state.outputEndpointDrag.originalFromDeviceId;
+          conn.fromPort = state.outputEndpointDrag.originalFromPort;
+          conn.fromCell = null;
+        }
+        recomputeAllConnections();
+        if (target && conn.invalid) {
+          conn.fromDeviceId = state.outputEndpointDrag.originalFromDeviceId;
+          conn.fromPort = state.outputEndpointDrag.originalFromPort;
+          conn.fromCell = null;
+          recomputeAllConnections();
+        }
+      }
+      state.outputEndpointDrag = null;
+      state.dragTargetPort = null;
       draw();
       return;
     }
@@ -1580,13 +1767,16 @@ function bindKeyboardEvents() {
         state.draggingDeviceId = null;
         state.endpointDrag = null;
         state.pipeEndpointDrag = null;
+        state.outputEndpointDrag = null;
+        state.pipeOutputEndpointDrag = null;
         state.isPanning = false;
         state.selectedId = null;
         state.selectedConnectionId = null;
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
-        state.hoveredInputPort = null;
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
         resetBoxSelectTransientState();
         canvas.style.cursor = 'crosshair';
       } else {
@@ -1616,13 +1806,16 @@ function bindKeyboardEvents() {
         state.draggingDeviceId = null;
         state.endpointDrag = null;
         state.pipeEndpointDrag = null;
+        state.outputEndpointDrag = null;
+        state.pipeOutputEndpointDrag = null;
         state.isPanning = false;
         state.selectedId = null;
         state.selectedConnectionId = null;
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
-        state.hoveredInputPort = null;
+        state.hoveredPort = null;
+        state.dragTargetPort = null;
         resetBoxSelectTransientState();
         canvas.style.cursor = 'crosshair';
       } else {

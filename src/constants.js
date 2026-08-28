@@ -49,6 +49,13 @@ export const BELT_COLOR_SELECTED = 'rgba(255, 143, 0, 0.85)';
 // 颜色去渲染管道。----
 export const PIPE_COLOR = 'rgba(96, 125, 139, 0.65)';
 export const PIPE_COLOR_SELECTED = 'rgba(2, 136, 209, 0.9)';
+
+// ---- 连线"不成立"(invalid，找不到合法路径)时的红色警示，选中态更饱和/更
+// 不透明——和 BELT_COLOR/BELT_COLOR_SELECTED、PIPE_COLOR/PIPE_COLOR_SELECTED
+// 是同一种"选中态只调饱和度、不改线型"的写法，invalid 状态本身不分网络，
+// 传送带/管道共用这一套。
+export const INVALID_COLOR = 'rgba(255, 23, 68, 0.55)';
+export const INVALID_COLOR_SELECTED = 'rgba(255, 23, 68, 0.92)';
 // Q 模式(管道自由绘制)的强调色：沿用管道自身蓝色系而非传送带模式的绿色，
 // 因为这是与传送带并列的独立工具，复用绿色会让用户分不清当前处于哪个模式。
 export const PIPE_ACCENT = 'rgba(2, 136, 209, 0.85)';

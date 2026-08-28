@@ -145,6 +145,12 @@ export const state = {
   // ---- 普通模式下拖拽已有管道的输入端重新接线，结构镜像上面的传送带版 ----
   pipeEndpointDrag: null,
 
+  // ---- 输出口拖拽改接(上面 endpointDrag/pipeEndpointDrag 的对称版本)：按住
+  // 一条连线已接好的输出口，可以把这段线的起点(fromDeviceId/fromPort)改接到
+  // 别的输出口，逻辑完全镜像，只是操作 from 端而不是 to 端。
+  outputEndpointDrag: null, // { connId, originalFromDeviceId, originalFromPort }
+  pipeOutputEndpointDrag: null,
+
   // ---- 同一格重叠时管道/传送带的点击优先级循环记忆 ----
   // { col, row, preferred: 'pipe'|'belt' }：记录上一次在这一格点击选中的是哪一层，
   // 同一格再次点击时切换到另一层；点击别的格子时清空、重新从"管道优先"开始。
@@ -159,11 +165,17 @@ export const state = {
   // deviceId 现算，不是 cursorTooltip 那种到点自动消失的一次性通知。
   hoveredWarningId: null,
 
-  // ---- 普通模式下悬停在"已连接、可拖拽改接"的输入口上时的高亮(见 render.js
-  // 的 drawPortMarker hovered 参数 / interactions.js 的 Endpoint Re-attach)。
-  // 只在空闲 mousemove 时计算(和 hoveredWarningId 同一个判定分支)，光标同时
-  // 从抓手('grab')改普通指针('default')，和"悬停在设备本体上可整体拖动"区分开。
-  hoveredInputPort: null, // { deviceId, index, portKind } | null
+  // ---- 普通模式下悬停在"已连接、可拖拽改接"的端口(输入口或输出口)上时的
+  // 高亮(见 render.js 的 drawPortMarker portState 参数 / interactions.js 的
+  // Endpoint Re-attach，输入输出两侧现在都支持拖拽改接)。只在空闲 mousemove
+  // 时计算(和 hoveredWarningId 同一个判定分支)，光标同时从抓手('grab')改
+  // 普通指针('default')，和"悬停在设备本体上可整体拖动"区分开。
+  hoveredPort: null, // { deviceId, index, portKind, portType: 'input'|'output' } | null
+
+  // ---- 正在拖拽一段连线(端口改接，或自由传送带/管道模式画新线)时，鼠标
+  // 当前划过的候选目标端口——纯粹的落点预览，和 hoveredPort 是两个概念(见
+  // drawPortMarker 的 portState 参数)，理论上不会同时非空。
+  dragTargetPort: null, // { deviceId, index, portKind, portType } | null
 
   // ---- 撤销历史(Ctrl+Z / Cmd+Z)：每次修改画布数据的操作前保存一份快照 ----
   history: [],

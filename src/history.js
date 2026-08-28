@@ -42,9 +42,11 @@ export function undo() {
   state.draggingWaypoint = null;
   state.pendingWaypointCreate = null;
   state.endpointDrag = null;
+  state.outputEndpointDrag = null;
   state.draggingPipeWaypoint = null;
   state.pendingPipeWaypointCreate = null;
   state.pipeEndpointDrag = null;
+  state.pipeOutputEndpointDrag = null;
   state.freeBeltStart = null;
   state.freeBeltPreviewPts = null;
   state.freeBeltHoverDeviceId = null;
@@ -70,7 +72,8 @@ export function undo() {
   state.pastePending = false;
   state.pastePreview = null;
   state.mapConfirmPending = null;
-  state.hoveredInputPort = null;
+  state.hoveredPort = null;
+  state.dragTargetPort = null;
 
   draw();
 }
