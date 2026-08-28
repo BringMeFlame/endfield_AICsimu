@@ -42,7 +42,7 @@ canvas {
 
 #power-summary {
   position: fixed;
-  top: 14px;
+  top: 52px;
   right: 14px;
   color: #222;
   font-family: system-ui, sans-serif;
@@ -57,6 +57,40 @@ canvas {
   user-select: none;
   z-index: 5;
   white-space: nowrap;
+}
+
+/* 地图选择下拉框：和 #power-summary 同一套胶囊视觉语言，但要接收鼠标事件
+   (下拉框本身)，因此不能像 #power-summary/#hint 那样整体 pointer-events:none。
+   叠在 #power-summary 上方，两个胶囊纵向堆叠不重叠。 */
+#map-selector {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #222;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  user-select: none;
+  z-index: 6;
+  white-space: nowrap;
+}
+#map-selector select {
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  color: #111;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
 }
 
 #toolbar {

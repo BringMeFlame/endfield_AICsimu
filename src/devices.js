@@ -18,8 +18,14 @@ export const NODE_LABEL = { merger: '汇', splitter: '分', 'pipe-merger': '汇'
 // 换成工具栏/渲染需要的 w/h/color/kind 等字段，真实数值自始至终只在
 // facilities.js 里维护一份，这里不允许出现第二份手抄的设备数值表。
 // category 是 facilities.js 的中文分类名，工具栏据此把图标分到对应标签页。
+// 协议核心/次级核心是每张地图切换时自动摆放的唯一固定设备(见 interactions.js
+// 的 placeCoreDevice)，用户不应该能从工具栏再拖出第二个，因此在生成
+// SPAWN_TEMPLATES 这一步就把这两个 id 过滤掉——单一注入点，下游所有消费者
+// (buildToolbarUI 的图标 DOM、updateSpawnPreview、工具栏 mouseup 落地、R 键
+// 预旋转、render.js 的 drawSpawnPreview)都自动继承这条限制，不需要各自加判断。
+const EXCLUDED_FROM_SPAWN = new Set(['dev_协议核心', 'dev_次级核心']);
 const FACILITY_TEMPLATES = Object.entries(FACILITIES).flatMap(([category, list]) =>
-  list.map(f => ({
+  list.filter(f => !EXCLUDED_FROM_SPAWN.has(f.id)).map(f => ({
     key: f.id,
     kind: 'facility',
     category,
@@ -136,6 +142,21 @@ export function rectsOverlap(a, b) {
 export function rectsOverlapPx(a, b) {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x ||
            a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+
+// ---- 地图硬边界适用范围 ----
+// 只有以下几类受地图边界(mapBounds.js)硬性限制，摆放/拖拽/旋转到边界外会被
+// interactions.js 的相应收尾逻辑撤销、寻路也不会跨越边界：核心(dev.locked)、
+// 汇流器/分流器(含管道版)、仓库存取线源桩与基段。这是贴近游戏本身设计的
+// 非对称规则(已与用户确认)：供电桩/中继器等电力设备、粉碎机等其它 facility
+// 设备一律不受地图边界约束，可以摆在地图外。
+const BOUNDED_FACILITY_IDS = new Set(['dev_仓库存取线源桩', 'dev_仓库存取线基段']);
+const BOUNDED_NODE_KINDS = new Set(['merger', 'splitter', 'pipe-merger', 'pipe-splitter']);
+export function requiresMapBounds(dev) {
+  if (dev.locked) return true;
+  if (BOUNDED_NODE_KINDS.has(dev.kind)) return true;
+  if (dev.kind === 'facility' && BOUNDED_FACILITY_IDS.has(dev.facilityId)) return true;
+  return false;
 }
 
 // 计算当前所有设备中互相重叠(碰撞)的设备 id 集合

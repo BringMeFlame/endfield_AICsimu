@@ -4,6 +4,7 @@ import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
 import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
+import { getMapWorldRect } from './mapBounds.js';
 
 // 设备标签用的思源黑体 Black 字重(index.html 已引入 Google Fonts 的 Noto Sans SC)，
 // 配合无衬线粗体撑出粗野主义工业风；找不到该字体时按声明顺序退回到系统黑体。
@@ -57,6 +58,25 @@ function drawGrid() {
   ctx.moveTo(0, originScreen.y);
   ctx.lineTo(w, originScreen.y);
   ctx.stroke();
+}
+
+// 地图边界(固定尺寸地图矩形)：常驻显示，不像供电范围叠层那样有开关。只画描边
+// 轮廓，不叠半透明底色——地图外仍然可以合法摆放大部分设备(只有核心/汇流器
+// 分流器/仓库存取线源桩与基段这几类受硬边界限制，见 devices.js 的
+// requiresMapBounds)，加底色遮罩容易让人误以为界外整体不可用。颜色刻意选一个
+// 之前没用过的中性深灰，和警示红/选中黄/三种操作模式强调色(绿/蓝/紫)区分开，
+// 因为这纯粹是静态参考线，不代表任何交互状态。
+const MAP_BOUNDARY_COLOR = 'rgba(17, 17, 17, 0.5)';
+
+function drawMapBoundary() {
+  if (!state.mapWidthCells || !state.mapHeightCells) return;
+  const rect = getMapWorldRect();
+  const topLeft = worldToScreen(rect.x, rect.y);
+  ctx.save();
+  ctx.lineWidth = scaled(3);
+  ctx.strokeStyle = MAP_BOUNDARY_COLOR;
+  ctx.strokeRect(topLeft.x, topLeft.y, rect.w * state.scale, rect.h * state.scale);
+  ctx.restore();
 }
 
 // 沿矩形内部画一组 45° 斜纹(裁剪到矩形范围内)。选中态的设备本体、以及选中态
@@ -792,6 +812,7 @@ function drawCursorTooltip() {
 
 export function draw() {
   drawGrid();
+  drawMapBoundary();      // 地图边界轮廓，画在网格之上、其它一切之下
   drawPowerRanges();      // 供电覆盖范围叠层，画在最底层，不遮挡传送带/设备
   drawConnections();      // 传送带 + 传送带物流桥
   drawDevices();          // 设备遮住传送带(不变)，含警告图标

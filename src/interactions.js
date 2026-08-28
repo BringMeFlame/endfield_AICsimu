@@ -1,12 +1,15 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
 import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECTED } from './constants.js';
-import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl } from './state.js';
+import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl, mapSelectEl } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
   hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts, getDeviceRectWorld, rectsOverlapPx,
   isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed,
-  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt, getSpawnOrientedFields
+  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt, getSpawnOrientedFields, requiresMapBounds
 } from './devices.js';
+import { MAP_CATALOG } from './data/maps.js';
+import { FACILITIES } from './data/facilities.js';
+import { isRectInMapBounds, isCellInMapBounds } from './mapBounds.js';
 import {
   buildBlockedSet, buildBeltOccupancy, buildPipeOccupancy, aStarOrthogonal, removeSelfOverlap,
   computePath, recomputeAllConnections, recomputeAllPipeConnections, recomputeAllForNetwork, recomputeAllFlows,
@@ -162,6 +165,10 @@ function resolveFreeStartClick(ui, clientX, clientY) {
       : { kind: 'free', col: cell.col, row: cell.row };
   }
   if (ui.hitTestConn(clientX, clientY)) return null;
+  if (!isCellInMapBounds(cell.col, cell.row)) {
+    showCursorTooltip('无法在地图边界外起始画线', clientX, clientY);
+    return null;
+  }
   return { kind: 'free', col: cell.col, row: cell.row };
 }
 
@@ -218,6 +225,10 @@ function resolveFreeEndClick(ui, clientX, clientY) {
   if (dangling && dangling.end === 'from') return { kind: 'free', col: cell.col, row: cell.row, continuesConn: dangling.conn };
   const hitConn = ui.hitTestConn(clientX, clientY);
   if (hitConn) return { kind: 'merge', conn: hitConn.conn };
+  if (!isCellInMapBounds(cell.col, cell.row)) {
+    showCursorTooltip('无法在地图边界外结束画线', clientX, clientY);
+    return null;
+  }
   return { kind: 'free', col: cell.col, row: cell.row };
 }
 
@@ -647,10 +658,19 @@ function commitBoxSelectDrag() {
     (origin.network === 'pipe' ? excludePipe : excludeBelt).add(connId);
   }
 
+  // 地图边界：框选批量拖动是刚体平移，只要选区内任一受边界约束的设备(核心/
+  // 汇流器分流器/仓库存取线源桩与基段，见 devices.js 的 requiresMapBounds)
+  // 越界，整批还原(保持相对位置不变，不做部分回退)——和下面的"顺手弄坏合法
+  // 连线"共用同一个 revertLastHistoryStep() 回滚，不新起一套。
+  const outOfBounds = [...state.boxDragOrigin.keys()].some(id => {
+    const dev = state.devices.find(d => d.id === id);
+    return dev && requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
+  });
+
   if (state.boxDragBeforeSnapshot) {
     const brokeBelt = brokeExistingValidConnection(state.boxDragBeforeSnapshot, BELT_NETWORK, excludeBelt);
     const brokePipe = brokeExistingValidConnection(state.boxDragBeforeSnapshot, PIPE_NETWORK, excludePipe);
-    if (brokeBelt || brokePipe) revertLastHistoryStep();
+    if (brokeBelt || brokePipe || outOfBounds) revertLastHistoryStep();
   }
 
   state.boxDragBeforeSnapshot = null;
@@ -721,7 +741,10 @@ function performBoxSelectRotate() {
   const excludePipe = computeBoxDragAffectedConnIds(PIPE_NETWORK);
   const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK, excludeBelt);
   const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK, excludePipe);
-  if (brokeBelt || brokePipe) revertLastHistoryStep();
+  // 地图边界：批量旋转后如果有受边界约束的设备(见 devices.js 的
+  // requiresMapBounds)越界，同样整体撤销这次旋转。
+  const outOfBounds = devs.some(dev => requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h));
+  if (brokeBelt || brokePipe || outOfBounds) revertLastHistoryStep();
   draw();
 }
 
@@ -731,7 +754,14 @@ function performBoxSelectRotate() {
 // 被显式框选中的连线本身无论端点如何一律整体移除。
 
 function performBoxSelectDelete() {
-  const deviceIds = state.boxSelectedDeviceIds;
+  // 核心(dev.locked)即使被框选中也不参与这次删除：过滤到一个局部 Set，不改
+  // state.boxSelectedDeviceIds 本身(那是选中高亮，删除后照旧整体清空)。
+  const deviceIds = new Set(
+    [...state.boxSelectedDeviceIds].filter(id => {
+      const dev = state.devices.find(d => d.id === id);
+      return !(dev && dev.locked);
+    })
+  );
   const explicitBelt = state.boxSelectedConnectionIds;
   const explicitPipe = state.boxSelectedPipeConnectionIds;
   if (deviceIds.size === 0 && explicitBelt.size === 0 && explicitPipe.size === 0) return;
@@ -791,7 +821,14 @@ function cloneConnForClipboard(conn) {
 }
 
 function buildClipboardFromSelection() {
-  const deviceIds = state.boxSelectedDeviceIds;
+  // 核心(dev.locked)不可复制：过滤出剪贴板要用的设备 id 集合，核心永远进不去
+  // state.clipboard，commitPaste() 因此不需要额外的复制保护。
+  const deviceIds = new Set(
+    [...state.boxSelectedDeviceIds].filter(id => {
+      const dev = state.devices.find(d => d.id === id);
+      return !(dev && dev.locked);
+    })
+  );
   if (deviceIds.size === 0 && state.boxSelectedConnectionIds.size === 0 && state.boxSelectedPipeConnectionIds.size === 0) return;
 
   const devices = state.devices.filter(d => deviceIds.has(d.id)).map(d => JSON.parse(JSON.stringify(d)));
@@ -1457,7 +1494,11 @@ function bindCanvasMouseEvents() {
         if (state.draggingDeviceBeforeSnapshot) {
           const brokeBelt = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, BELT_NETWORK);
           const brokePipe = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, PIPE_NETWORK);
-          if (brokeBelt || brokePipe) {
+          // 地图边界：受边界约束的设备(核心/汇流器分流器/仓库存取线源桩与
+          // 基段，见 devices.js 的 requiresMapBounds)拖到界外同样整体还原，
+          // 和"顺手弄坏合法连线"共用同一个回滚。
+          const outOfBounds = requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
+          if (brokeBelt || brokePipe || outOfBounds) {
             revertLastHistoryStep();
             reverted = true;
           }
@@ -1677,7 +1718,10 @@ function bindKeyboardEvents() {
       // 安全网检查，坏了就整体撤销这次旋转。
       const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
       const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
-      if (brokeBelt || brokePipe) {
+      // 地图边界：旋转后如果设备(核心/汇流器分流器/仓库存取线源桩与基段，见
+      // devices.js 的 requiresMapBounds)越界，同样整体撤销这次旋转。
+      const outOfBounds = requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
+      if (brokeBelt || brokePipe || outOfBounds) {
         revertLastHistoryStep();
       }
       draw();
@@ -1703,6 +1747,8 @@ function bindKeyboardEvents() {
       state.selectedConnectionId = null;
       draw();
     } else if (state.selectedId !== null) {
+      const dev = state.devices.find(d => d.id === state.selectedId);
+      if (dev && dev.locked) { e.preventDefault(); return; } // 核心不可删除
       e.preventDefault();
       pushHistory();
       // 删除设备只移除设备本身：与它相连的传送带/管道保留下来，端点改为设备
@@ -1710,7 +1756,6 @@ function bindKeyboardEvents() {
       // 模式下选中/删除，或拖拽途经点调整。两个网络的分离逻辑抽成了
       // pathfinding.js 的 detachDeviceFromConnections，批量删除(performBoxSelectDelete)
       // 复用同一份。
-      const dev = state.devices.find(d => d.id === state.selectedId);
       if (dev) {
         detachDeviceFromConnections(state.selectedId, BELT_NETWORK);
         detachDeviceFromConnections(state.selectedId, PIPE_NETWORK);
@@ -1721,6 +1766,97 @@ function bindKeyboardEvents() {
       draw();
     }
   });
+}
+
+// ---- 地图选择(下拉框)：切换地图会清空画布，需 confirm() 二次确认 ----
+// 地图矩形固定锚定在网格原点，核心摆放在地图中心，见 mapBounds.js/data/maps.js
+// 顶部注释。
+
+// 在当前地图上放置固定核心：不经过 pushHistory()——地图(重新)选择是"新开一张
+// 图"的语义，核心的存在不该出现在 Ctrl+Z 历史里(undo() 会把它连同别的设备一起
+// 撤销掉，这个模块不需要为此另写一份"核心缺失时补回来"的兜底逻辑，只要保证
+// 核心摆放本身永远不落进 state.history 即可，见 applyMapSelection 里
+// state.history = [] 的说明)。
+function placeCoreDevice(mapDef) {
+  const facility = FACILITIES['其他'].find(f => f.id === mapDef.coreFacilityId);
+  const cx = Math.floor((mapDef.w - facility.footprint.w) / 2);
+  const cy = Math.floor((mapDef.h - facility.footprint.h) / 2);
+  const core = {
+    id: state.nextId++,
+    gridX: cx, gridY: cy,
+    w: facility.footprint.w, h: facility.footprint.h, rot: 0,
+    kind: 'facility',
+    color: '#ffffff', borderColor: '#111111',
+    label: facility.name,
+    facilityId: facility.id,
+    ports: facility.ports,
+    powerCost: facility.powerCost,
+    powerRange: facility.powerRange,
+    isLowProfile: facility.isLowProfile,
+    locked: true // 核心：禁止删除/复制(见 keydown 的 Delete 分支、buildClipboardFromSelection、
+                 // performBoxSelectDelete)，但可以正常移动/旋转/接线，不受这个标记影响。
+  };
+  state.devices.push(core);
+  state.coreDeviceId = core.id;
+}
+
+// 应用一次地图切换：画布上已有设备时先 confirm()，取消则整个操作不生效(下拉框
+// 选中值由 bindMapSelectorEvents 的 change 回调负责还原)。
+function applyMapSelection(mapId) {
+  const mapDef = MAP_CATALOG.find(m => m.id === mapId);
+  if (!mapDef) return false;
+  if (state.devices.length > 0) {
+    const ok = window.confirm('切换地图会清空当前画布上的所有设备和连线，且无法恢复，确定要切换吗？');
+    if (!ok) return false;
+  }
+  // 清空画布：不经过 pushHistory()/undo()，和刷新页面丢失数据是同一语义(本项目
+  // 没有持久化，见 CLAUDE.md 的已知问题)——地图切换本来就是"新开一张图"，不应该
+  // 能撤销回上一张地图的内容。
+  state.devices = [];
+  state.connections = [];
+  state.pipeConnections = [];
+  state.nextId = 1;
+  state.nextConnId = 1;
+  state.nextPipeConnId = 1;
+  state.history = [];
+  state.selectedId = null;
+  state.selectedConnectionId = null;
+  state.selectedPipeConnectionId = null;
+  resetBoxSelectTransientState();
+  state.clipboard = null; // 旧地图坐标系下的剪贴板内容跨地图没有意义
+
+  state.mapId = mapDef.id;
+  state.mapWidthCells = mapDef.w;
+  state.mapHeightCells = mapDef.h;
+  placeCoreDevice(mapDef);
+
+  // 相机居中到新地图中心，而不是网格原点(旧 initView() 的行为)
+  state.offsetX = window.innerWidth / 2 - (mapDef.w * GRID_SIZE / 2) * state.scale;
+  state.offsetY = window.innerHeight / 2 - (mapDef.h * GRID_SIZE / 2) * state.scale;
+
+  recomputeAllFlows();
+  draw();
+  return true;
+}
+
+function bindMapSelectorEvents() {
+  for (const m of MAP_CATALOG) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.label;
+    mapSelectEl.appendChild(opt);
+  }
+  mapSelectEl.addEventListener('change', (e) => {
+    const prevId = state.mapId;
+    if (!applyMapSelection(e.target.value)) mapSelectEl.value = prevId; // 用户在 confirm() 里取消，选单还原
+  });
+}
+
+// main.js 启动时调用：首次加载 state.devices 为空，applyMapSelection 内部的
+// confirm() 分支自然不会触发，不需要为"首次加载"单独写一套跳过确认框的逻辑。
+export function bootstrapDefaultMap() {
+  applyMapSelection(MAP_CATALOG[0].id);
+  mapSelectEl.value = MAP_CATALOG[0].id;
 }
 
 // ---- 工具栏拖拽生成新设备 ----
@@ -1908,7 +2044,11 @@ function bindToolbarSpawnEvents() {
       // 反应池5x5更容易压中)，整体撤销这次生成，两个网络都查。
       const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
       const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
-      if (brokeBelt || brokePipe) {
+      // 地图边界：受边界约束的种类(汇流器/分流器/仓库存取线源桩与基段——核心
+      // 已被排除出 SPAWN_TEMPLATES，这里不会遇到，见 devices.js 的
+      // requiresMapBounds)落地在界外同样整体撤销这次生成。
+      const outOfBounds = requiresMapBounds(newDevice) && !isRectInMapBounds(newDevice.gridX, newDevice.gridY, newDevice.w, newDevice.h);
+      if (brokeBelt || brokePipe || outOfBounds) {
         revertLastHistoryStep();
         state.selectedId = null;
       }
@@ -1924,4 +2064,5 @@ export function initInteractions() {
   bindCanvasMouseEvents();
   bindKeyboardEvents();
   bindToolbarSpawnEvents();
+  bindMapSelectorEvents();
 }

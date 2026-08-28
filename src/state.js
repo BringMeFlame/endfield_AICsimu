@@ -7,6 +7,7 @@ export const toolbarIcons = document.getElementById('toolbar-icons');
 export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
 export const powerSummaryEl = document.getElementById('power-summary');
+export const mapSelectEl = document.getElementById('map-select');
 
 // ---- 全局可变状态 ----
 // 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的
@@ -199,5 +200,17 @@ export const state = {
   // 和 activeToolbarCategory 同类的持久化视图开关，不是"进行到一半会被打断"
   // 的交互态，同样不需要在 undo()/E 键切换自由传送带模式/鼠标收尾逻辑这三处
   // 重置。
-  showPowerRanges: false
+  showPowerRanges: false,
+
+  // ---- 当前地图(尺寸 + 固定核心)：和 activeToolbarCategory/showPowerRanges
+  // 同类的持久化配置状态，不是"进行到一半会被打断"的交互态，因此不在
+  // undo()/E 键切换画线模式/鼠标收尾逻辑这三处重置。地图矩形固定锚定在网格
+  // 原点(左上角格 (0,0)，右下角格 (mapWidthCells, mapHeightCells))，边界判定
+  // (mapBounds.js)、初始核心摆放(interactions.js 的 placeCoreDevice)、寻路
+  // 阻挡(pathfinding.js 的 aStarOrthogonal)都基于这个约定，不支持任意偏移的
+  // 地图原点。
+  mapId: null,          // data/maps.js MAP_CATALOG 里的地图 id，main.js 启动时引导设为默认地图
+  mapWidthCells: 0,
+  mapHeightCells: 0,
+  coreDeviceId: null    // 当前地图固定核心在 state.devices 里的实例 id
 };

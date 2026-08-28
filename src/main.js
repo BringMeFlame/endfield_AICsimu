@@ -2,7 +2,7 @@
 import { canvas, ctx } from './state.js';
 import { initView } from './coords.js';
 import { draw } from './render.js';
-import { initInteractions, updateHintText } from './interactions.js';
+import { initInteractions, updateHintText, bootstrapDefaultMap } from './interactions.js';
 
 function resize() {
   canvas.width = window.innerWidth * devicePixelRatio;
@@ -19,4 +19,5 @@ initInteractions();
 // 初始化
 initView();
 resize();
+bootstrapDefaultMap(); // 自动选中默认地图 + 摆放对应核心，避免打开即空白无核心
 updateHintText();

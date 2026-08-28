@@ -3,6 +3,7 @@ import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, TURN_PENALTY
 import { state } from './state.js';
 import { effectiveGridPos, getDevicePorts, oppositeDir, NODE_LABEL } from './devices.js';
 import { worldToScreen } from './coords.js';
+import { isCellInMapBounds } from './mapBounds.js';
 
 // ---- 网络描述符：传送带/管道是两套平行的连线网络，共享同一套寻路/命中测试/
 // 撤销安全检查算法。所有原本硬编码操作 state.connections 的函数都改成接受一个
@@ -189,6 +190,7 @@ export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, 
         const nc = node.col + DIR_VECT[d].dx;
         const nr = node.row + DIR_VECT[d].dy;
         if (nc < minC || nc > maxC || nr < minR || nr > maxR) continue;
+        if (!isCellInMapBounds(nc, nr)) continue; // 地图边界：传送带/管道寻路都不能移动到地图外的格子
         if (blocked.has(nc + ',' + nr)) continue;
         const turn = d === node.dir ? 0 : 1;
 
