@@ -3,6 +3,7 @@ import { GRID_SIZE, DIR_E, DIR_S, DIR_W, DIR_N, DIR_VECT, ALL_DIRS, WARNING_ICON
 import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
+import { isRectInMapBounds } from './mapBounds.js';
 
 // 1x1 节点(汇流器/分流器)在画布上显示的短标签，靠这个 + 占地大小(而不是颜色)
 // 分辨节点种类；splitConnectionAtCell(切入已有连线生成节点)和下面 NODE_TEMPLATES
@@ -145,13 +146,14 @@ export function rectsOverlapPx(a, b) {
 }
 
 // ---- 地图硬边界适用范围 ----
-// 只有以下几类受地图边界(mapBounds.js)硬性限制，摆放/拖拽/旋转到边界外会被
-// interactions.js 的相应收尾逻辑撤销、寻路也不会跨越边界：核心(dev.locked)、
-// 汇流器/分流器(含管道版)、仓库存取线源桩与基段。这是贴近游戏本身设计的
-// 非对称规则(已与用户确认)：供电桩/中继器等电力设备、粉碎机等其它 facility
-// 设备一律不受地图边界约束，可以摆在地图外。
+// 只有以下几类受地图边界(mapBounds.js)约束：核心(dev.locked)、传送带版汇流器/
+// 分流器、仓库存取线源桩与基段。这是贴近游戏本身设计的非对称规则(已与用户
+// 确认)：管道系统(管道连线寻路 + 管道版汇流器/分流器)完全豁免边界，供电桩/
+// 中继器等电力设备、粉碎机等其它 facility 设备同样不受约束，都可以摆在地图
+// 外。摆放/拖拽/旋转越界不会被撤销，只会在 computeOutOfBoundsIds() 标红警示
+// (和设备重叠同一套哲学)；传送带寻路仍然不会跨越边界，见 pathfinding.js。
 const BOUNDED_FACILITY_IDS = new Set(['dev_仓库存取线源桩', 'dev_仓库存取线基段']);
-const BOUNDED_NODE_KINDS = new Set(['merger', 'splitter', 'pipe-merger', 'pipe-splitter']);
+const BOUNDED_NODE_KINDS = new Set(['merger', 'splitter']);
 export function requiresMapBounds(dev) {
   if (dev.locked) return true;
   if (BOUNDED_NODE_KINDS.has(dev.kind)) return true;
@@ -175,6 +177,20 @@ export function computeCollidingIds() {
     }
   }
   return colliding;
+}
+
+// 计算当前所有"受地图边界约束"的设备(见 requiresMapBounds)里，实际越界的
+// 设备 id 集合。和 computeCollidingIds() 一样是纯派生计算，每次现算、不缓存、
+// 不进撤销栈——越界只标红警示，不阻止摆放/移动/旋转(和设备重叠、以及"顺手
+// 弄坏合法连线"统一改成同一套哲学：操作永远成功，只是结果可能不合法)。
+export function computeOutOfBoundsIds() {
+  const out = new Set();
+  for (const dev of state.devices) {
+    if (!requiresMapBounds(dev)) continue;
+    const pos = effectiveGridPos(dev);
+    if (!isRectInMapBounds(pos.gridX, pos.gridY, dev.w, dev.h)) out.add(dev.id);
+  }
+  return out;
 }
 
 // ---- 电力覆盖判定 ----

@@ -39,7 +39,6 @@ export function undo() {
   state.selectedConnectionId = null;
   state.selectedPipeConnectionId = null;
   state.draggingDeviceId = null;
-  state.draggingDeviceBeforeSnapshot = null;
   state.draggingWaypoint = null;
   state.pendingWaypointCreate = null;
   state.endpointDrag = null;
@@ -64,7 +63,6 @@ export function undo() {
   state.boxSelectedPipeConnectionIds = new Set();
   state.boxSelectPointerDown = null;
   state.boxSelectMarquee = null;
-  state.boxDragBeforeSnapshot = null;
   state.boxDragOrigin = null;
   state.boxDragConnOrigin = null;
   state.boxDragDeltaCol = 0;
@@ -72,6 +70,7 @@ export function undo() {
   state.pastePending = false;
   state.pastePreview = null;
   state.mapConfirmPending = null;
+  state.hoveredInputPort = null;
 
   draw();
 }

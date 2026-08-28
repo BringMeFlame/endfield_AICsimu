@@ -4,7 +4,6 @@ export const ctx = canvas.getContext('2d');
 export const toolbar = document.getElementById('toolbar');
 export const toolbarTabs = document.getElementById('toolbar-tabs');
 export const toolbarIcons = document.getElementById('toolbar-icons');
-export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
 export const powerSummaryEl = document.getElementById('power-summary');
 export const mapSelectEl = document.getElementById('map-select');
@@ -102,15 +101,13 @@ export const state = {
   // 叠加)当前选中集合。
   boxSelectMarquee: null, // { startWX, startWY, curWX, curWY }
 
-  // 批量拖动(长按已选中项触发)状态。beforeSnapshot 镜像单设备拖拽的
-  // draggingDeviceBeforeSnapshot；origin 记录参与移动的每个设备开始拖动前的
-  // 格坐标(devices.js 的 effectiveGridPos() 据此叠加 deltaCol/Row 实时计算显示
-  // 位置，和 draggingDeviceId 单设备版本对称)；connOrigin 记录"和这次移动有关"
-  // 的每条连线(见 interactions.js computeBoxDragAffectedConnIds 的取舍规则)开始
-  // 拖动前的 fromCell/toCell/waypoints，供每帧从原始值重算(而非增量累加)平移
-  // 后的新值，避免累积误差；deltaCol/Row 是当前整体格偏移(刚体平移，所有设备/
-  // 连线共用同一个偏移，不各自独立吸附，否则相对位置会走样)。
-  boxDragBeforeSnapshot: null,
+  // 批量拖动(长按已选中项触发)状态。origin 记录参与移动的每个设备开始拖动前
+  // 的格坐标(devices.js 的 effectiveGridPos() 据此叠加 deltaCol/Row 实时计算
+  // 显示位置，和 draggingDeviceId 单设备版本对称)；connOrigin 记录"和这次移动
+  // 有关"的每条连线(见 interactions.js computeBoxDragAffectedConnIds 的取舍
+  // 规则)开始拖动前的 fromCell/toCell/waypoints，供每帧从原始值重算(而非增量
+  // 累加)平移后的新值，避免累积误差；deltaCol/Row 是当前整体格偏移(刚体平移，
+  // 所有设备/连线共用同一个偏移，不各自独立吸附，否则相对位置会走样)。
   boxDragOrigin: null, // Map<deviceId, {gridX, gridY}>
   boxDragConnOrigin: null, // Map<connId, {network:'belt'|'pipe', fromCell, toCell, waypoints}>
   boxDragDeltaCol: 0,
@@ -162,6 +159,12 @@ export const state = {
   // deviceId 现算，不是 cursorTooltip 那种到点自动消失的一次性通知。
   hoveredWarningId: null,
 
+  // ---- 普通模式下悬停在"已连接、可拖拽改接"的输入口上时的高亮(见 render.js
+  // 的 drawPortMarker hovered 参数 / interactions.js 的 Endpoint Re-attach)。
+  // 只在空闲 mousemove 时计算(和 hoveredWarningId 同一个判定分支)，光标同时
+  // 从抓手('grab')改普通指针('default')，和"悬停在设备本体上可整体拖动"区分开。
+  hoveredInputPort: null, // { deviceId, index, portKind } | null
+
   // ---- 撤销历史(Ctrl+Z / Cmd+Z)：每次修改画布数据的操作前保存一份快照 ----
   history: [],
 
@@ -171,7 +174,6 @@ export const state = {
   lastMouseY: 0,
 
   draggingDeviceId: null,
-  draggingDeviceBeforeSnapshot: null, // 拖拽开始前 pushHistory() 压入的那份快照,松手时用来判定/撤销"拖坏了别的合法连线"
   dragOffsetWX: 0,
   dragOffsetWY: 0,
   dragDeviceWX: 0, // 拖拽中设备左上角的实时(已吸附)世界坐标

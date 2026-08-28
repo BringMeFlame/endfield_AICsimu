@@ -1,18 +1,18 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
 import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECTED } from './constants.js';
 import {
-  state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl, mapSelectEl,
+  state, canvas, toolbar, toolbarTabs, toolbarIcons, hintEl, mapSelectEl,
   mapConfirmOverlayEl, mapConfirmMessageEl, mapConfirmCancelEl, mapConfirmOkEl
 } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
   hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts, getDeviceRectWorld, rectsOverlapPx,
   isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed,
-  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt, getSpawnOrientedFields, requiresMapBounds
+  flowDirOf, SPAWN_TEMPLATES, findWarningIconAt, getSpawnOrientedFields
 } from './devices.js';
 import { MAP_CATALOG } from './data/maps.js';
 import { FACILITIES } from './data/facilities.js';
-import { isRectInMapBounds, isCellInMapBounds } from './mapBounds.js';
+import { isCellInMapBounds } from './mapBounds.js';
 import {
   buildBlockedSet, buildBeltOccupancy, buildPipeOccupancy, aStarOrthogonal, removeSelfOverlap,
   computePath, recomputeAllConnections, recomputeAllPipeConnections, recomputeAllForNetwork, recomputeAllFlows,
@@ -83,6 +83,7 @@ const BELT_UI = {
   hitTestConn: hitTestConnection,
   splitterKind: 'splitter', mergerKind: 'merger',
   checkGroundConflict: null, // 传送带侧没有地面冲突检查，见 groundHasBeltConflict 的注释
+  enforceMapBounds: true, // 传送带仍然受地图边界约束，管道全面豁免(见 PIPE_UI)
   enterMode: () => { state.freeBeltMode = true; },
   setSelected: id => { state.selectedId = null; state.selectedConnectionId = id; },
 };
@@ -98,6 +99,7 @@ const PIPE_UI = {
   hitTestConn: hitTestPipeConnection,
   splitterKind: 'pipe-splitter', mergerKind: 'pipe-merger',
   checkGroundConflict: groundHasBeltConflict,
+  enforceMapBounds: false, // 管道系统全面豁免地图边界(用户已确认)
   enterMode: () => { state.freePipeMode = true; },
   setSelected: id => { state.selectedId = null; state.selectedPipeConnectionId = id; },
 };
@@ -119,7 +121,7 @@ function resolveFreeStartForPathing(ui, towardCol, towardRow, blocked, occupancy
     return p ? { col: p.cellCol, row: p.cellRow, dir: p.dir, x: p.x, y: p.y } : null;
   }
   const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(dev.id, p.index));
-  const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, occupancy);
+  const best = pickBestPort(avail, towardCol, towardRow, null, true, blocked, occupancy, ui.network);
   return best ? { col: best.cellCol, row: best.cellRow, dir: best.dir, x: best.x, y: best.y } : null;
 }
 
@@ -168,7 +170,7 @@ function resolveFreeStartClick(ui, clientX, clientY) {
       : { kind: 'free', col: cell.col, row: cell.row };
   }
   if (ui.hitTestConn(clientX, clientY)) return null;
-  if (!isCellInMapBounds(cell.col, cell.row)) {
+  if (ui.enforceMapBounds && !isCellInMapBounds(cell.col, cell.row)) {
     showCursorTooltip('无法在地图边界外起始画线', clientX, clientY);
     return null;
   }
@@ -219,7 +221,7 @@ function resolveFreeEndClick(ui, clientX, clientY) {
     const refCol = startResolved ? startResolved.col : pos.gridX;
     const refRow = startResolved ? startResolved.row : pos.gridY;
     const refDir = startResolved ? startResolved.dir : null;
-    const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, occupancy);
+    const best = pickBestPort(avail, refCol, refRow, refDir, false, blocked, occupancy, ui.network);
     if (!best) return null;
     return { kind: 'port', deviceId: hitDev.id, port: best.index };
   }
@@ -228,7 +230,7 @@ function resolveFreeEndClick(ui, clientX, clientY) {
   if (dangling && dangling.end === 'from') return { kind: 'free', col: cell.col, row: cell.row, continuesConn: dangling.conn };
   const hitConn = ui.hitTestConn(clientX, clientY);
   if (hitConn) return { kind: 'merge', conn: hitConn.conn };
-  if (!isCellInMapBounds(cell.col, cell.row)) {
+  if (ui.enforceMapBounds && !isCellInMapBounds(cell.col, cell.row)) {
     showCursorTooltip('无法在地图边界外结束画线', clientX, clientY);
     return null;
   }
@@ -265,7 +267,7 @@ function updateFreePreview(ui, hoverClientX, hoverClientY) {
   const startResolved = resolveFreeStartForPathing(ui, hoverCell.col, hoverCell.row, blocked, occupancy);
   if (!startResolved) return;
 
-  const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, occupancy);
+  const cellPath = aStarOrthogonal(startResolved.col, startResolved.row, startResolved.dir, hoverCell.col, hoverCell.row, null, blocked, occupancy, ui.network);
   if (!cellPath) return;
   const cleaned = removeSelfOverlap(cellPath);
   const pts = cleaned.map(c => ({ x: (c.col + 0.5) * GRID_SIZE, y: (c.row + 0.5) * GRID_SIZE }));
@@ -331,7 +333,7 @@ function finalizeFreeConnection(ui, endResolved, clientX, clientY) {
     if (!dev) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     const pos = effectiveGridPos(dev);
     const avail = getDevicePorts(dev, pos).outputs.filter(p => p.portKind === ui.portKind && !ui.isOutputPortUsed(dev.id, p.index));
-    const best = pickBestPort(avail, roughTargetCol, roughTargetRow, null, true, blocked, occupancy);
+    const best = pickBestPort(avail, roughTargetCol, roughTargetRow, null, true, blocked, occupancy, ui.network);
     if (!best) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     fromDeviceId = dev.id;
     fromPort = best.index;
@@ -344,7 +346,7 @@ function finalizeFreeConnection(ui, endResolved, clientX, clientY) {
     if (availInputs.length === 0) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     const startResolved = resolveConnEndpoint(fromDeviceId, fromPort, fromCell, true);
     if (!startResolved) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
-    const bestInput = pickBestPort(availInputs, startResolved.cellCol, startResolved.cellRow, startResolved.dir, false, blocked, occupancy);
+    const bestInput = pickBestPort(availInputs, startResolved.cellCol, startResolved.cellRow, startResolved.dir, false, blocked, occupancy, ui.network);
     if (!bestInput) { ui.setStart(null); ui.setPreviewPts(null); draw(); return; }
     toDeviceId = mergerNode.id;
     toPort = bestInput.index;
@@ -502,7 +504,6 @@ function resetBoxSelectTransientState() {
   state.boxSelectedPipeConnectionIds = new Set();
   state.boxSelectPointerDown = null;
   state.boxSelectMarquee = null;
-  state.boxDragBeforeSnapshot = null;
   state.boxDragOrigin = null;
   state.boxDragConnOrigin = null;
   state.boxDragDeltaCol = 0;
@@ -520,11 +521,10 @@ function boxSelectedConnIdsForNetwork(network) {
   return network === BELT_NETWORK ? state.boxSelectedConnectionIds : state.boxSelectedPipeConnectionIds;
 }
 
-// 框选批量移动/旋转时"跟着一起变"的连线集合：端点绑定在被选中设备上的连线
-// (设备一动，它自然要跟着走)，并上被显式框选中的连线本身(哪怕它两端都没绑
-// 定在被选中的设备上，用户直接选中了这条线，拖拽它也能单独移动/随旋转变换)。
-// 这个集合同时也是 brokeExistingValidConnection 的 excludeIds：这次操作导致
-// 它们变化是预期之内的直接后果，不是牵连到了别的无关连线。
+// 框选批量拖拽时"跟着一起变"的连线集合：端点绑定在被选中设备上的连线(设备
+// 一动，它自然要跟着走)，并上被显式框选中的连线本身(哪怕它两端都没绑定在被
+// 选中的设备上，用户直接选中了这条线，拖拽它也能单独移动)。供 startBoxSelectDrag
+// 记录这些连线开始拖动前的 fromCell/toCell/waypoints，供每帧从原始值重算。
 function computeBoxDragAffectedConnIds(network) {
   const merged = connectionsTouchingDevices(state.boxSelectedDeviceIds, network);
   for (const id of boxSelectedConnIdsForNetwork(network)) merged.add(id);
@@ -594,7 +594,6 @@ function commitBoxSelectMarquee() {
 
 function startBoxSelectDrag() {
   pushHistory();
-  state.boxDragBeforeSnapshot = state.history[state.history.length - 1];
 
   state.boxDragOrigin = new Map();
   for (const id of state.boxSelectedDeviceIds) {
@@ -656,27 +655,6 @@ function commitBoxSelectDrag() {
   }
   recomputeAllFlows();
 
-  const excludeBelt = new Set(), excludePipe = new Set();
-  for (const [connId, origin] of state.boxDragConnOrigin) {
-    (origin.network === 'pipe' ? excludePipe : excludeBelt).add(connId);
-  }
-
-  // 地图边界：框选批量拖动是刚体平移，只要选区内任一受边界约束的设备(核心/
-  // 汇流器分流器/仓库存取线源桩与基段，见 devices.js 的 requiresMapBounds)
-  // 越界，整批还原(保持相对位置不变，不做部分回退)——和下面的"顺手弄坏合法
-  // 连线"共用同一个 revertLastHistoryStep() 回滚，不新起一套。
-  const outOfBounds = [...state.boxDragOrigin.keys()].some(id => {
-    const dev = state.devices.find(d => d.id === id);
-    return dev && requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
-  });
-
-  if (state.boxDragBeforeSnapshot) {
-    const brokeBelt = brokeExistingValidConnection(state.boxDragBeforeSnapshot, BELT_NETWORK, excludeBelt);
-    const brokePipe = brokeExistingValidConnection(state.boxDragBeforeSnapshot, PIPE_NETWORK, excludePipe);
-    if (brokeBelt || brokePipe || outOfBounds) revertLastHistoryStep();
-  }
-
-  state.boxDragBeforeSnapshot = null;
   state.boxDragOrigin = null;
   state.boxDragConnOrigin = null;
   state.boxDragDeltaCol = 0;
@@ -713,7 +691,6 @@ function performBoxSelectRotate() {
   const pivotX = (minX + maxX) / 2, pivotY = (minY + maxY) / 2;
 
   pushHistory();
-  const beforeSnapshot = state.history[state.history.length - 1];
 
   for (const dev of devs) {
     const cx = dev.gridX + dev.w / 2, cy = dev.gridY + dev.h / 2;
@@ -739,15 +716,6 @@ function performBoxSelectRotate() {
   for (const dev of devs) clearWaypointsForDevice(dev.id);
 
   recomputeAllFlows();
-
-  const excludeBelt = computeBoxDragAffectedConnIds(BELT_NETWORK);
-  const excludePipe = computeBoxDragAffectedConnIds(PIPE_NETWORK);
-  const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK, excludeBelt);
-  const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK, excludePipe);
-  // 地图边界：批量旋转后如果有受边界约束的设备(见 devices.js 的
-  // requiresMapBounds)越界，同样整体撤销这次旋转。
-  const outOfBounds = devs.some(dev => requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h));
-  if (brokeBelt || brokePipe || outOfBounds) revertLastHistoryStep();
   draw();
 }
 
@@ -869,7 +837,6 @@ function commitPaste() {
   const dRow = state.pastePreview.originRow - state.clipboard.anchorRow;
 
   pushHistory();
-  const beforeSnapshot = state.history[state.history.length - 1];
 
   const idMap = new Map();
   const newDeviceIds = new Set();
@@ -904,19 +871,12 @@ function commitPaste() {
 
   recomputeAllFlows();
 
-  // 粘贴设备属于"放置操作"，和工具栏生成新设备走同一条硬性规则：不能顺手压垮
-  // 一条操作前合法的连线，坏了整体撤销这次粘贴；新粘贴的连线自己是否 invalid
-  // 不受影响(维持"画/贴到不可达位置，留给用户调整"的既有行为)。
-  const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK, newBeltIds);
-  const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK, newPipeIds);
-  if (brokeBelt || brokePipe) {
-    revertLastHistoryStep();
-  } else {
-    // 成功落地后新粘贴的这批直接成为当前框选选中集合，方便接着微调。
-    state.boxSelectedDeviceIds = newDeviceIds;
-    state.boxSelectedConnectionIds = newBeltIds;
-    state.boxSelectedPipeConnectionIds = newPipeIds;
-  }
+  // 粘贴落地后新粘贴的这批直接成为当前框选选中集合，方便接着微调。压坏别的
+  // 合法连线不再整体撤销这次粘贴，压坏的连线自然显示成红色 invalid(和其它
+  // 放置类操作统一改成"操作永远成功，只留下红色警示")。
+  state.boxSelectedDeviceIds = newDeviceIds;
+  state.boxSelectedConnectionIds = newBeltIds;
+  state.boxSelectedPipeConnectionIds = newPipeIds;
   state.pastePending = false;
   state.pastePreview = null;
   updateHintText();
@@ -1003,6 +963,7 @@ function bindCanvasMouseEvents() {
       const conn = state.pipeConnections.find(c => c.toDeviceId === inPipePortHit.deviceId && c.toPort === inPipePortHit.index);
       if (conn) {
         pushHistory();
+        state.hoveredInputPort = null;
         state.pipeEndpointDrag = { connId: conn.id, originalToDeviceId: conn.toDeviceId, originalToPort: conn.toPort };
         conn.toDeviceId = null;
         conn.toPort = null;
@@ -1021,6 +982,7 @@ function bindCanvasMouseEvents() {
       const conn = state.connections.find(c => c.toDeviceId === inPortHit.deviceId && c.toPort === inPortHit.index);
       if (conn) {
         pushHistory();
+        state.hoveredInputPort = null;
         state.endpointDrag = { connId: conn.id, originalToDeviceId: conn.toDeviceId, originalToPort: conn.toPort };
         conn.toDeviceId = null;
         conn.toPort = null;
@@ -1073,7 +1035,6 @@ function bindCanvasMouseEvents() {
       // (和大多数框选工具"点选区外的东西即清空选区"的习惯一致)。
       if (hasBoxSelection()) resetBoxSelectTransientState();
       pushHistory();
-      state.draggingDeviceBeforeSnapshot = state.history[state.history.length - 1];
       state.selectedId = hit.id;
       state.selectedConnectionId = null;
       state.selectedPipeConnectionId = null;
@@ -1321,9 +1282,30 @@ function bindCanvasMouseEvents() {
       const prevHoverId = state.hoveredWarningId ? state.hoveredWarningId.deviceId : null;
       const nextHoverId = iconHit ? iconHit.deviceId : null;
       state.hoveredWarningId = iconHit;
+
+      // 悬停在"已连接、可拖拽改接"的输入口上时给出专属高亮(见 drawPortMarker
+      // 的 hovered 参数)，光标改普通指针(不是抓手)，和"悬停在设备本体上可整体
+      // 拖动"的抓手区分开。命中优先级镜像 mousedown 里 Endpoint Re-attach 判定
+      // 的顺序：管道口先于传送带口。
+      let hoveredPort = null;
+      if (!iconHit) {
+        const pipeHit = findPortAt(e.clientX, e.clientY, 'input', 'pipe');
+        if (pipeHit && isPipeInputPortUsed(pipeHit.deviceId, pipeHit.index)) {
+          hoveredPort = { deviceId: pipeHit.deviceId, index: pipeHit.index, portKind: 'pipe' };
+        } else {
+          const beltHit = findPortAt(e.clientX, e.clientY, 'input', 'belt');
+          if (beltHit && isInputPortUsed(beltHit.deviceId, beltHit.index)) {
+            hoveredPort = { deviceId: beltHit.deviceId, index: beltHit.index, portKind: 'belt' };
+          }
+        }
+      }
+      const prevPortKey = state.hoveredInputPort && `${state.hoveredInputPort.deviceId}:${state.hoveredInputPort.index}:${state.hoveredInputPort.portKind}`;
+      const nextPortKey = hoveredPort && `${hoveredPort.deviceId}:${hoveredPort.index}:${hoveredPort.portKind}`;
+      state.hoveredInputPort = hoveredPort;
+
       const worldPos = screenToWorld(e.clientX, e.clientY);
-      canvas.style.cursor = iconHit ? 'help' : (hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default');
-      if (prevHoverId !== nextHoverId) draw();
+      canvas.style.cursor = iconHit ? 'help' : hoveredPort ? 'default' : (hitTestDevice(worldPos.x, worldPos.y) ? 'grab' : 'default');
+      if (prevHoverId !== nextHoverId || prevPortKey !== nextPortKey) draw();
     }
   });
 
@@ -1361,7 +1343,7 @@ function bindCanvasMouseEvents() {
               const pipeOccupancy = buildPipeOccupancy(conn.id);
               const fromResolved = resolveConnEndpoint(conn.fromDeviceId, conn.fromPort, conn.fromCell, true);
               const best = fromResolved
-                ? pickBestPort(avail, fromResolved.cellCol, fromResolved.cellRow, fromResolved.dir, false, blocked, pipeOccupancy)
+                ? pickBestPort(avail, fromResolved.cellCol, fromResolved.cellRow, fromResolved.dir, false, blocked, pipeOccupancy, PIPE_NETWORK)
                 : avail[0];
               if (best) target = { deviceId: hitDev.id, index: best.index };
             }
@@ -1408,7 +1390,7 @@ function bindCanvasMouseEvents() {
               const beltOccupancy = buildBeltOccupancy(conn.id);
               const fromResolved = resolveConnEndpoint(conn.fromDeviceId, conn.fromPort, conn.fromCell, true);
               const best = fromResolved
-                ? pickBestPort(avail, fromResolved.cellCol, fromResolved.cellRow, fromResolved.dir, false, blocked, beltOccupancy)
+                ? pickBestPort(avail, fromResolved.cellCol, fromResolved.cellRow, fromResolved.dir, false, blocked, beltOccupancy, BELT_NETWORK)
                 : avail[0];
               if (best) target = { deviceId: hitDev.id, index: best.index };
             }
@@ -1487,32 +1469,14 @@ function bindCanvasMouseEvents() {
         // 坐标和拖拽前一致)不应该顺手抹掉用户为这台设备的连线摆的造型。
         if (actuallyMoved) clearWaypointsForDevice(dev.id);
         recomputeAllFlows();
-        // 落位后如果把某条操作前合法的连线拖成 invalid(哪怕设备本身跟那条连线
-        // 毫不相干，只是新位置挤占/绕开了它寻路需要用到的格子)，不接受这次移动，
-        // 整体还原回拖拽前的位置和连线状态——设备重叠仍然只是警示、不阻挡放置，
-        // 这里只管"别的连线被顺手拖坏"这一种情况。通用设备拖拽两个网络都要查，
-        // 和 finalizeFreeConnection/createSplitterAtClick 传 PIPE_UI 时"故意只查
-        // PIPE_NETWORK"的地面冲突例外不是一回事。
-        let reverted = false;
-        if (state.draggingDeviceBeforeSnapshot) {
-          const brokeBelt = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, BELT_NETWORK);
-          const brokePipe = brokeExistingValidConnection(state.draggingDeviceBeforeSnapshot, PIPE_NETWORK);
-          // 地图边界：受边界约束的设备(核心/汇流器分流器/仓库存取线源桩与
-          // 基段，见 devices.js 的 requiresMapBounds)拖到界外同样整体还原，
-          // 和"顺手弄坏合法连线"共用同一个回滚。
-          const outOfBounds = requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
-          if (brokeBelt || brokePipe || outOfBounds) {
-            revertLastHistoryStep();
-            reverted = true;
-          }
-        }
-        // 真的挪动过位置(不是单纯点击选中)且这次移动被接受时，落位后自动取消选中，
-        // 不需要用户再点一下空白处才能清掉高亮——单纯点击选中的手感不受影响。
-        if (actuallyMoved && !reverted) state.selectedId = null;
+        // 真的挪动过位置(不是单纯点击选中)时，落位后自动取消选中，不需要用户
+        // 再点一下空白处才能清掉高亮——单纯点击选中的手感不受影响。移动后压坏
+        // 别的合法连线/越界不再整体撤回，压坏的连线显示红色 invalid、越界的
+        // 设备标红(见 devices.js 的 computeOutOfBoundsIds)，操作本身永远成功。
+        if (actuallyMoved) state.selectedId = null;
       }
     }
     state.draggingDeviceId = null;
-    state.draggingDeviceBeforeSnapshot = null;
     state.isPanning = false;
     canvas.style.cursor = 'default';
     draw();
@@ -1614,7 +1578,6 @@ function bindKeyboardEvents() {
         state.draggingPipeWaypoint = null;
         state.pendingPipeWaypointCreate = null;
         state.draggingDeviceId = null;
-        state.draggingDeviceBeforeSnapshot = null;
         state.endpointDrag = null;
         state.pipeEndpointDrag = null;
         state.isPanning = false;
@@ -1623,6 +1586,7 @@ function bindKeyboardEvents() {
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
+        state.hoveredInputPort = null;
         resetBoxSelectTransientState();
         canvas.style.cursor = 'crosshair';
       } else {
@@ -1650,7 +1614,6 @@ function bindKeyboardEvents() {
         state.draggingPipeWaypoint = null;
         state.pendingPipeWaypointCreate = null;
         state.draggingDeviceId = null;
-        state.draggingDeviceBeforeSnapshot = null;
         state.endpointDrag = null;
         state.pipeEndpointDrag = null;
         state.isPanning = false;
@@ -1659,6 +1622,7 @@ function bindKeyboardEvents() {
         state.selectedPipeConnectionId = null;
         state.lastConduitClickCell = null;
         state.hoveredWarningId = null;
+        state.hoveredInputPort = null;
         resetBoxSelectTransientState();
         canvas.style.cursor = 'crosshair';
       } else {
@@ -1675,13 +1639,12 @@ function bindKeyboardEvents() {
       // 清空了旧的单选/框选批量选中(见 toolbarIcons 的 mousedown 处理)，但
       // 防御性地把这个分支放在最前面，即使将来那处清空逻辑被改掉也不会转错
       // 目标。keydown 不带鼠标坐标，用 state.spawnPointerX/Y(mousemove 里持续
-      // 更新)重新计算幽灵图标尺寸和落地预览位置。
+      // 更新)重新计算落地预览位置。
       if (state.spawning) {
         e.preventDefault();
         state.spawnRotSteps = (state.spawnRotSteps + 1) % 4;
         const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
         if (template) {
-          updateGhostIconGeometry(template, state.spawnPointerX, state.spawnPointerY);
           updateSpawnPreview(state.spawnPointerX, state.spawnPointerY);
         }
         draw();
@@ -1698,7 +1661,6 @@ function bindKeyboardEvents() {
       if (!dev || !(dev.kind === 'facility' || isNode)) return;
       e.preventDefault();
       pushHistory();
-      const beforeSnapshot = state.history[state.history.length - 1];
       if (isNode) {
         // 汇流器/分流器(含管道版)是 1x1 节点，没有 facility 那套 rot+w/h 互换机制，
         // nodeDevicePorts 直接读 mainOutEdge/mainInEdge 这一条边——旋转就是把这条
@@ -1722,18 +1684,6 @@ function bindKeyboardEvents() {
         dev.h = tmp;
       }
       recomputeAllFlows();
-      // 旋转可能改变非正方形 facility 设备实际占用的格子，也可能挪动节点已经
-      // 接好的那 1 进/1 出端口位置，理论上都可能像"设备拖拽/生成新设备"一样
-      // 顺手压中另一条操作前合法的连线，按 CLAUDE.md 的规矩这里统一做同样的
-      // 安全网检查，坏了就整体撤销这次旋转。
-      const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
-      const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
-      // 地图边界：旋转后如果设备(核心/汇流器分流器/仓库存取线源桩与基段，见
-      // devices.js 的 requiresMapBounds)越界，同样整体撤销这次旋转。
-      const outOfBounds = requiresMapBounds(dev) && !isRectInMapBounds(dev.gridX, dev.gridY, dev.w, dev.h);
-      if (brokeBelt || brokePipe || outOfBounds) {
-        revertLastHistoryStep();
-      }
       draw();
       return;
     }
@@ -1906,27 +1856,6 @@ function isPointInToolbar(x, y) {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
-// 幽灵图标(拖拽生成设备时跟随鼠标的预览)按设备真实占地(template.w/h)乘
-// GRID_SIZE 和当前缩放换算出屏幕像素尺寸，不再是固定 56x56——粉碎机3x3、
-// 反应池5x5、协议核心9x9这些设备落地前就能看出实际大小差异，和落地位置的
-// 网格吸附预览(render.js 的 drawSpawnPreview，同样乘 state.scale)保持视觉
-// 尺寸一致。size 通过内联 style 设置，是本项目"位置类内联 style 允许突破
-// CSS-only 规则"的同一个例外(ghostIcon.style.left/top 早就是这么做的)，
-// 因为这是随设备/缩放变化的动态值，写不进静态 CSS 规则。
-// 落地前允许用 R 键预旋转(state.spawnRotSteps)，幽灵图标的尺寸要跟着旋转后
-// 的占地换算，不能直接用 template.w/h(那是未旋转的原始尺寸)——见 devices.js
-// 的 getSpawnOrientedFields，和落地预览(updateSpawnPreview)、真正落地生成
-// 设备(bindToolbarSpawnEvents 的 mouseup)共用同一份朝向换算逻辑。
-function updateGhostIconGeometry(template, clientX, clientY) {
-  const oriented = getSpawnOrientedFields(template, state.spawnRotSteps);
-  const gw = oriented.w * GRID_SIZE * state.scale;
-  const gh = oriented.h * GRID_SIZE * state.scale;
-  ghostIcon.style.width = gw + 'px';
-  ghostIcon.style.height = gh + 'px';
-  ghostIcon.style.left = (clientX - gw / 2) + 'px';
-  ghostIcon.style.top = (clientY - gh / 2) + 'px';
-}
-
 function updateSpawnPreview(clientX, clientY) {
   if (isPointInToolbar(clientX, clientY)) {
     state.spawnPreview = null;
@@ -2011,9 +1940,6 @@ function bindToolbarSpawnEvents() {
     state.spawnRotSteps = 0;
     state.spawnPointerX = e.clientX;
     state.spawnPointerY = e.clientY;
-    ghostIcon.style.display = 'flex';
-    ghostIcon.textContent = template.label;
-    updateGhostIconGeometry(template, e.clientX, e.clientY);
     updateSpawnPreview(e.clientX, e.clientY);
     draw();
   });
@@ -2022,8 +1948,6 @@ function bindToolbarSpawnEvents() {
     if (!state.spawning) return;
     state.spawnPointerX = e.clientX;
     state.spawnPointerY = e.clientY;
-    const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
-    if (template) updateGhostIconGeometry(template, e.clientX, e.clientY);
     updateSpawnPreview(e.clientX, e.clientY);
     draw();
   });
@@ -2031,12 +1955,10 @@ function bindToolbarSpawnEvents() {
   window.addEventListener('mouseup', (e) => {
     if (!state.spawning) return;
     state.spawning = false;
-    ghostIcon.style.display = 'none';
 
     const template = SPAWN_TEMPLATES.find(t => t.key === state.spawningTemplateKey);
     if (state.spawnPreview && template && !isPointInToolbar(e.clientX, e.clientY)) {
       pushHistory();
-      const beforeSnapshot = state.history[state.history.length - 1];
       // 落地时把预览阶段按 R 键累积的旋转(state.spawnRotSteps)固化到新设备的
       // w/h/rot(facility)或 mainOutEdge/mainInEdge(汇流器/分流器)上，和预览
       // (updateSpawnPreview/render.js 的 drawSpawnPreview)共用同一份换算逻辑。
@@ -2079,19 +2001,6 @@ function bindToolbarSpawnEvents() {
       state.devices.push(newDevice);
       state.selectedId = newDevice.id;
       recomputeAllFlows();
-      // 顺手补上设备拖拽/分流器生成早就有、但工具栏生成一直没有的安全网：
-      // 新设备的footprint如果顺手压垮了某条操作前合法的连线(粉碎机3x3不明显，
-      // 反应池5x5更容易压中)，整体撤销这次生成，两个网络都查。
-      const brokeBelt = brokeExistingValidConnection(beforeSnapshot, BELT_NETWORK);
-      const brokePipe = brokeExistingValidConnection(beforeSnapshot, PIPE_NETWORK);
-      // 地图边界：受边界约束的种类(汇流器/分流器/仓库存取线源桩与基段——核心
-      // 已被排除出 SPAWN_TEMPLATES，这里不会遇到，见 devices.js 的
-      // requiresMapBounds)落地在界外同样整体撤销这次生成。
-      const outOfBounds = requiresMapBounds(newDevice) && !isRectInMapBounds(newDevice.gridX, newDevice.gridY, newDevice.w, newDevice.h);
-      if (brokeBelt || brokePipe || outOfBounds) {
-        revertLastHistoryStep();
-        state.selectedId = null;
-      }
     }
     state.spawnPreview = null;
     state.spawningTemplateKey = null;

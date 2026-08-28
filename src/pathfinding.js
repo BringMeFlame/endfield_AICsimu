@@ -144,7 +144,7 @@ export function buildPipeOccupancy(excludeConnId) { return buildOccupancyFor(sta
 // 拐一次弯"这两种方案，A* 会自动挑代价更低的那个，不需要额外的两阶段搜索。
 // 这也是两台设备贴邻、端口朝向刚好错开一格时不再绕成"回头挂钩"长直角、而是
 // 直接在缺口里拐一次弯的原因(真实反例见 git log 里相关 fix 提交)。
-export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy) {
+export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, goalDir, blocked, beltOccupancy, network = BELT_NETWORK) {
   if (startCol === goalCol && startRow === goalRow) {
     return [{ col: startCol, row: startRow }];
   }
@@ -190,7 +190,8 @@ export function aStarOrthogonal(startCol, startRow, startDir, goalCol, goalRow, 
         const nc = node.col + DIR_VECT[d].dx;
         const nr = node.row + DIR_VECT[d].dy;
         if (nc < minC || nc > maxC || nr < minR || nr > maxR) continue;
-        if (!isCellInMapBounds(nc, nr)) continue; // 地图边界：传送带/管道寻路都不能移动到地图外的格子
+        // 地图边界：只限制传送带网络，管道系统全面豁免边界(用户已确认)。
+        if (network.kind !== 'pipe' && !isCellInMapBounds(nc, nr)) continue;
         if (blocked.has(nc + ',' + nr)) continue;
         const turn = d === node.dir ? 0 : 1;
 
@@ -307,12 +308,12 @@ export function resolveConnEndpoint(deviceId, port, cell, isOutput) {
 // (otherCol,otherRow,otherDir) 寻路代价最小(以格数近似)的一个。
 // isCandidateOutput=true 表示候选端口是路径的起点(如分流器新分支的起点)，
 // 否则候选端口是路径的终点(如汇流器新分支的终点)。
-export function pickBestPort(candidates, otherCol, otherRow, otherDir, isCandidateOutput, blocked, beltOccupancy) {
+export function pickBestPort(candidates, otherCol, otherRow, otherDir, isCandidateOutput, blocked, beltOccupancy, network = BELT_NETWORK) {
   let best = null, bestLen = Infinity;
   for (const port of candidates) {
     const path = isCandidateOutput
-      ? aStarOrthogonal(port.cellCol, port.cellRow, port.dir, otherCol, otherRow, otherDir, blocked, beltOccupancy)
-      : aStarOrthogonal(otherCol, otherRow, otherDir, port.cellCol, port.cellRow, port.dir, blocked, beltOccupancy);
+      ? aStarOrthogonal(port.cellCol, port.cellRow, port.dir, otherCol, otherRow, otherDir, blocked, beltOccupancy, network)
+      : aStarOrthogonal(otherCol, otherRow, otherDir, port.cellCol, port.cellRow, port.dir, blocked, beltOccupancy, network);
     if (path && path.length < bestLen) { bestLen = path.length; best = port; }
   }
   return best;
@@ -370,7 +371,7 @@ export function computePath(conn, network = BELT_NETWORK) {
   for (let i = 0; i < checkpoints.length - 1; i++) {
     const a = checkpoints[i], b = checkpoints[i + 1];
     const hopGoalDir = i === checkpoints.length - 2 ? goalDir : null;
-    let hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, occupancy);
+    let hopPath = aStarOrthogonal(a.col, a.row, curDir, b.col, b.row, hopGoalDir, blocked, occupancy, network);
     if (!hopPath) { fullCellPath = null; break; }
     hopPath = removeSelfOverlap(hopPath);
     fullCellPath = fullCellPath === null ? hopPath : fullCellPath.concat(hopPath.slice(1));

@@ -1,8 +1,8 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PORT_HOVER_FILL_BELT, PORT_HOVER_FILL_PIPE, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE } from './constants.js';
 import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeOutOfBoundsIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 import { getMapWorldRect } from './mapBounds.js';
 
@@ -307,15 +307,17 @@ function drawWarningTooltip() {
 
 function drawDevices() {
   const collidingIds = computeCollidingIds();
+  const outOfBoundsIds = computeOutOfBoundsIds();
   const unpoweredIds = computeUnpoweredIds();
   for (const dev of state.devices) {
     const pos = effectiveGridPos(dev);
     const rect = getDeviceRectWorld(pos.gridX, pos.gridY, dev.w, dev.h);
     drawDeviceRect(rect, dev, {
       dragging: dev.id === state.draggingDeviceId,
-      // 地面冲突警示(管道分流器/汇流器落在已有传送带地面格上)复用同一套红色
-      // 重叠警示，见 interactions.js 里 groundConflict 的说明。
-      colliding: collidingIds.has(dev.id) || dev.groundConflict === true,
+      // 地面冲突警示(管道分流器/汇流器落在已有传送带地面格上)、地图边界越界
+      // 都复用同一套红色重叠警示，见 interactions.js 里 groundConflict 的说明
+      // 和 devices.js 的 computeOutOfBoundsIds。
+      colliding: collidingIds.has(dev.id) || dev.groundConflict === true || outOfBoundsIds.has(dev.id),
       // 框选批量选中和普通单选共用同一套黄色斜纹选中视觉(CLAUDE.md："选中态
       // 统一用黄色系")，不为多选另起一种颜色。
       selected: dev.id === state.selectedId || state.boxSelectedDeviceIds.has(dev.id),
@@ -339,7 +341,7 @@ function angleForDir(dir) {
 // 内部填充始终完全不透明(不能被半透明的斜纹选中态/网格线透出来，那样线条会
 // 显得很乱)；"是否已连接"改成只体现在边框描边的不透明度上(未连接半透明、
 // 已连接不透明)，不再对整个箭头(含填充)一起降低透明度。
-function drawPortMarker(p, connected, flowDir) {
+function drawPortMarker(p, connected, flowDir, hovered) {
   const screen = worldToScreen(p.x, p.y);
   const color = p.portKind === 'pipe' ? PIPE_PORT_COLOR : BELT_PORT_COLOR;
   const s = scaled(8);
@@ -354,32 +356,43 @@ function drawPortMarker(p, connected, flowDir) {
   ctx.closePath();
 
   ctx.globalAlpha = 1;
-  ctx.fillStyle = PORT_FILL_COLOR;
+  // 悬停("可拖拽改接"提示，见 interactions.js 的 Endpoint Re-attach)时填充
+  // 换成亮色(传送带黄/管道蓝)，替代常态的白色，和常态视觉明显区分。
+  ctx.fillStyle = hovered
+    ? (p.portKind === 'pipe' ? PORT_HOVER_FILL_PIPE : PORT_HOVER_FILL_BELT)
+    : PORT_FILL_COLOR;
   ctx.fill();
 
-  ctx.globalAlpha = connected ? 1 : 0.55;
-  ctx.strokeStyle = color;
+  ctx.globalAlpha = connected ? 1 : 0.55; // hovered 时 connected 恒为 true，不冲突
+  // 悬停时描边统一改深色虚线，不用 color 本身(管道口的蓝色描边叠在同色蓝色
+  // 填充上会失去对比度)。
+  ctx.strokeStyle = hovered ? '#111111' : color;
   // 缩小地图时如果单纯乘 state.scale，线宽会跟着无限变细直到肉眼难辨——这里
   // 设一个不随缩放继续变薄的下限(2px)，保证缩得再小箭头依旧看得清；放大时仍然
   // 正常跟着 scaled() 一起变粗。
   ctx.lineWidth = Math.max(2, scaled(3.2));
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  if (hovered) ctx.setLineDash([scaled(1.6), scaled(1.3)]);
   ctx.stroke();
+  if (hovered) ctx.setLineDash([]);
   ctx.restore();
 }
 
 function drawDevicePorts(dev, pos) {
   const ports = getDevicePorts(dev, pos);
   // "是否已连接"必须按 portKind 查对应网络，否则反应池的管道口会永远查到
-  // 传送带连线表、显示成"未连接"。
+  // 传送带连线表、显示成"未连接"。悬停高亮只针对输入口(唯一支持拖拽改接的
+  // 端口类型，见 state.hoveredInputPort 的说明)，输出口恒不高亮。
+  const hp = state.hoveredInputPort;
   for (const p of ports.inputs) {
     const connected = p.portKind === 'pipe' ? isPipeInputPortUsed(dev.id, p.index) : isInputPortUsed(dev.id, p.index);
-    drawPortMarker(p, connected, p.dir);
+    const hovered = !!hp && hp.deviceId === dev.id && hp.index === p.index && hp.portKind === p.portKind;
+    drawPortMarker(p, connected, p.dir, hovered);
   }
   for (const p of ports.outputs) {
     const connected = p.portKind === 'pipe' ? isPipeOutputPortUsed(dev.id, p.index) : isOutputPortUsed(dev.id, p.index);
-    drawPortMarker(p, connected, p.dir);
+    drawPortMarker(p, connected, p.dir, false);
   }
 }
 

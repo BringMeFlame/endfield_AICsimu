@@ -71,6 +71,13 @@ export const PIPE_PORT_COLOR = '#0288d1';
 // 端口箭头实心填充色：白色，呼应"设备白底彩边"的整体配色习惯，不额外发明新色相。
 export const PORT_FILL_COLOR = '#ffffff';
 
+// ---- 端口"可拖拽改接"悬停高亮：仅用于已连接的输入口(见 interactions.js 的
+// Endpoint Re-attach)。虚线描边+亮色填充，和常态的白底+深色/蓝色描边区分开，
+// 提示"点这里能把这条线的末端拖到别处"。填充色复用既有色相：传送带口用画布
+// 选中态同款黄(#ffeb3b)，管道口用管道口自身的蓝(PIPE_PORT_COLOR)。
+export const PORT_HOVER_FILL_BELT = '#ffeb3b';
+export const PORT_HOVER_FILL_PIPE = PIPE_PORT_COLOR;
+
 // ---- 设备警告图标(如"未通电")参数：贴在设备包围盒右上角的小圆点+"!"，悬停
 // 显示提示浮窗，复用"警告/无效态统一半透明红色"的语义，不为电力警告单开新
 // 颜色。像素数是"缩放1x"时的屏幕像素，随 state.scale 缩放(见 render.js 的
