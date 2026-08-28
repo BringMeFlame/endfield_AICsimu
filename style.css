@@ -93,6 +93,55 @@ canvas {
   cursor: pointer;
 }
 
+/* 地图切换二次确认浮层：替代原生 window.confirm()(部分嵌入式/沙盒环境会静默
+   拦截原生对话框，且原生弹窗和整体自绘 UI 风格不搭)，视觉上沿用 .device-icon/
+   #ghost-icon 的"白底黑边 + Noto Sans SC"语言。inset:0 铺满整个视口且保持默认
+   的 pointer-events:auto，天然拦住画布下面的鼠标/滚轮事件，不需要再给 canvas
+   的事件处理逐个加"浮层打开时跳过"的判断。 */
+#map-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#map-confirm-box {
+  background: #ffffff;
+  border: 3px solid #111;
+  border-radius: 6px;
+  padding: 20px 24px;
+  max-width: 360px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+#map-confirm-message {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  color: #222;
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+#map-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+#map-confirm-actions button {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-weight: 900;
+  font-size: 13px;
+  background: #ffffff;
+  border: 2px solid #111;
+  border-radius: 4px;
+  padding: 6px 16px;
+  cursor: pointer;
+}
+#map-confirm-ok {
+  background: #111;
+  color: #fff;
+}
+
 #toolbar {
   position: fixed;
   top: 0;

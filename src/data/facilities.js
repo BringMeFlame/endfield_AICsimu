@@ -598,8 +598,8 @@ export const FACILITIES = {
       bandwidth: 2,
       isLowProfile: false,
       ports: [
+        { id: 'belt_in_0_0', type: 'item_input', grid: [0, 0], dir: 'left' },
         { id: 'belt_in_0_1', type: 'item_input', grid: [0, 1], dir: 'left' },
-        { id: 'belt_in_1_1', type: 'item_input', grid: [1, 1], dir: 'left' },
       ],
     },
   ],

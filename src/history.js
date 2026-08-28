@@ -71,6 +71,7 @@ export function undo() {
   state.boxDragDeltaRow = 0;
   state.pastePending = false;
   state.pastePreview = null;
+  state.mapConfirmPending = null;
 
   draw();
 }

@@ -8,6 +8,10 @@ export const ghostIcon = document.getElementById('ghost-icon');
 export const hintEl = document.getElementById('hint');
 export const powerSummaryEl = document.getElementById('power-summary');
 export const mapSelectEl = document.getElementById('map-select');
+export const mapConfirmOverlayEl = document.getElementById('map-confirm-overlay');
+export const mapConfirmMessageEl = document.getElementById('map-confirm-message');
+export const mapConfirmCancelEl = document.getElementById('map-confirm-cancel');
+export const mapConfirmOkEl = document.getElementById('map-confirm-ok');
 
 // ---- 全局可变状态 ----
 // 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的
@@ -212,5 +216,11 @@ export const state = {
   mapId: null,          // data/maps.js MAP_CATALOG 里的地图 id，main.js 启动时引导设为默认地图
   mapWidthCells: 0,
   mapHeightCells: 0,
-  coreDeviceId: null    // 当前地图固定核心在 state.devices 里的实例 id
+  coreDeviceId: null,   // 当前地图固定核心在 state.devices 里的实例 id
+
+  // ---- 地图切换二次确认浮层(替代原生 window.confirm()，见 interactions.js 的
+  // showMapConfirmModal/hideMapConfirmModal)：待确认时记录目标地图，供"确定
+  // 切换"按钮读取。和 pastePending 同类——"进行到一半、等待用户点按钮决定"的
+  // 瞬时交互态，undo() 里一并重置。
+  mapConfirmPending: null // { mapDef } | null
 };

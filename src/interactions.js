@@ -1,6 +1,9 @@
 // ---- 交互：画布内鼠标/键盘事件绑定、自由传送带/自由管道模式状态机、工具栏拖拽生成新设备 ----
 import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECTED } from './constants.js';
-import { state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl, mapSelectEl } from './state.js';
+import {
+  state, canvas, toolbar, toolbarTabs, toolbarIcons, ghostIcon, hintEl, mapSelectEl,
+  mapConfirmOverlayEl, mapConfirmMessageEl, mapConfirmCancelEl, mapConfirmOkEl
+} from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
   hitTestDevice, findPortAt, effectiveGridPos, getDevicePorts, getDeviceRectWorld, rectsOverlapPx,
@@ -1535,6 +1538,13 @@ function bindCanvasMouseEvents() {
 
 function bindKeyboardEvents() {
   window.addEventListener('keydown', (e) => {
+    // 地图切换确认浮层打开时，除了 Escape(等效"取消")之外的所有快捷键一律
+    // 不生效，避免用户在浮层还开着的时候意外触发画布操作(Ctrl+Z/E/Q/R/Delete
+    // 等)。鼠标事件不需要类似判断，浮层铺满全屏拦住了 canvas 的点击/滚轮。
+    if (state.mapConfirmPending) {
+      if (e.key === 'Escape') { e.preventDefault(); hideMapConfirmModal(); }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
       undo();
@@ -1800,18 +1810,12 @@ function placeCoreDevice(mapDef) {
   state.coreDeviceId = core.id;
 }
 
-// 应用一次地图切换：画布上已有设备时先 confirm()，取消则整个操作不生效(下拉框
-// 选中值由 bindMapSelectorEvents 的 change 回调负责还原)。
-function applyMapSelection(mapId) {
-  const mapDef = MAP_CATALOG.find(m => m.id === mapId);
-  if (!mapDef) return false;
-  if (state.devices.length > 0) {
-    const ok = window.confirm('切换地图会清空当前画布上的所有设备和连线，且无法恢复，确定要切换吗？');
-    if (!ok) return false;
-  }
-  // 清空画布：不经过 pushHistory()/undo()，和刷新页面丢失数据是同一语义(本项目
-  // 没有持久化，见 CLAUDE.md 的已知问题)——地图切换本来就是"新开一张图"，不应该
-  // 能撤销回上一张地图的内容。
+// 实际执行一次地图切换(清空画布 + 摆放核心 + 相机居中)，不做任何确认判断——
+// 调用方(bootstrapDefaultMap 或确认浮层"确定切换"按钮)负责确保这一步已经被
+// 批准。清空画布不经过 pushHistory()/undo()，和刷新页面丢失数据是同一语义
+// (本项目没有持久化，见 CLAUDE.md 的已知问题)——地图切换本来就是"新开一张
+// 图"，不应该能撤销回上一张地图的内容。
+function performMapSwitch(mapDef) {
   state.devices = [];
   state.connections = [];
   state.pipeConnections = [];
@@ -1836,7 +1840,22 @@ function applyMapSelection(mapId) {
 
   recomputeAllFlows();
   draw();
-  return true;
+}
+
+// 地图切换二次确认浮层：不用原生 window.confirm()——部分嵌入式/沙盒环境(如
+// iframe 预览)没有 allow-modals 权限时会静默拦截原生对话框、直接当作用户点了
+// 取消，导致切换看起来完全没反应；而且原生弹窗本身也和整个应用自绘的白底黑边
+// 工业风 UI 不搭。自绘浮层用 state.mapConfirmPending 记录待切换的目标地图，
+// #map-confirm-overlay 铺满全屏(style.css)天然拦住画布下面的鼠标事件。
+function showMapConfirmModal(mapDef) {
+  state.mapConfirmPending = { mapDef };
+  mapConfirmMessageEl.textContent = `切换到"${mapDef.label}"会清空当前画布上的所有设备和连线，且无法恢复，确定要切换吗？`;
+  mapConfirmOverlayEl.style.display = 'flex';
+}
+
+function hideMapConfirmModal() {
+  state.mapConfirmPending = null;
+  mapConfirmOverlayEl.style.display = 'none';
 }
 
 function bindMapSelectorEvents() {
@@ -1847,15 +1866,36 @@ function bindMapSelectorEvents() {
     mapSelectEl.appendChild(opt);
   }
   mapSelectEl.addEventListener('change', (e) => {
-    const prevId = state.mapId;
-    if (!applyMapSelection(e.target.value)) mapSelectEl.value = prevId; // 用户在 confirm() 里取消，选单还原
+    const mapDef = MAP_CATALOG.find(m => m.id === e.target.value);
+    if (!mapDef) return;
+    if (state.devices.length === 0) {
+      performMapSwitch(mapDef);
+      return;
+    }
+    // 先把下拉框视觉还原成切换前的地图，真正的切换要等用户在确认浮层里点
+    // "确定切换"才发生(见 bindMapConfirmModalEvents)。
+    mapSelectEl.value = state.mapId;
+    showMapConfirmModal(mapDef);
   });
 }
 
-// main.js 启动时调用：首次加载 state.devices 为空，applyMapSelection 内部的
-// confirm() 分支自然不会触发，不需要为"首次加载"单独写一套跳过确认框的逻辑。
+function bindMapConfirmModalEvents() {
+  mapConfirmOkEl.addEventListener('click', () => {
+    if (!state.mapConfirmPending) return;
+    const { mapDef } = state.mapConfirmPending;
+    hideMapConfirmModal();
+    performMapSwitch(mapDef);
+    mapSelectEl.value = mapDef.id;
+  });
+  mapConfirmCancelEl.addEventListener('click', () => {
+    hideMapConfirmModal(); // 下拉框在 change 事件里已经还原，这里不需要再改
+  });
+}
+
+// main.js 启动时调用：首次加载 state.devices 为空，performMapSwitch 不需要
+// 经过确认浮层这一层判断。
 export function bootstrapDefaultMap() {
-  applyMapSelection(MAP_CATALOG[0].id);
+  performMapSwitch(MAP_CATALOG[0]);
   mapSelectEl.value = MAP_CATALOG[0].id;
 }
 
@@ -2065,4 +2105,5 @@ export function initInteractions() {
   bindKeyboardEvents();
   bindToolbarSpawnEvents();
   bindMapSelectorEvents();
+  bindMapConfirmModalEvents();
 }

@@ -63,17 +63,17 @@ function drawGrid() {
 // 地图边界(固定尺寸地图矩形)：常驻显示，不像供电范围叠层那样有开关。只画描边
 // 轮廓，不叠半透明底色——地图外仍然可以合法摆放大部分设备(只有核心/汇流器
 // 分流器/仓库存取线源桩与基段这几类受硬边界限制，见 devices.js 的
-// requiresMapBounds)，加底色遮罩容易让人误以为界外整体不可用。颜色刻意选一个
-// 之前没用过的中性深灰，和警示红/选中黄/三种操作模式强调色(绿/蓝/紫)区分开，
-// 因为这纯粹是静态参考线，不代表任何交互状态。
-const MAP_BOUNDARY_COLOR = 'rgba(17, 17, 17, 0.5)';
+// requiresMapBounds)，加底色遮罩容易让人误以为界外整体不可用。黑色加粗实线
+// (用户反馈半透明灰不够清晰)，和警示红/选中黄/三种操作模式强调色(绿/蓝/紫)
+// 区分开，因为这纯粹是静态参考线，不代表任何交互状态。
+const MAP_BOUNDARY_COLOR = '#000000';
 
 function drawMapBoundary() {
   if (!state.mapWidthCells || !state.mapHeightCells) return;
   const rect = getMapWorldRect();
   const topLeft = worldToScreen(rect.x, rect.y);
   ctx.save();
-  ctx.lineWidth = scaled(3);
+  ctx.lineWidth = scaled(4);
   ctx.strokeStyle = MAP_BOUNDARY_COLOR;
   ctx.strokeRect(topLeft.x, topLeft.y, rect.w * state.scale, rect.h * state.scale);
   ctx.restore();
@@ -672,9 +672,28 @@ function drawPowerRangeRect(r) {
 // computePowerRangeRects() 算出的每个供电桩/中继器覆盖范围，多个范围重叠处
 // 颜色自然叠加变深，直观体现覆盖强度。不常驻显示，按 H 键切换。
 function drawPowerRanges() {
-  if (!state.showPowerRanges) return;
+  if (state.showPowerRanges) {
+    ctx.save();
+    for (const r of computePowerRangeRects()) drawPowerRangeRect(r);
+    ctx.restore();
+    return;
+  }
+  // H 键关闭时，仍然给"正在被拖拽"的供电类设备(powerRange 字段非空)一个实时
+  // 预览，不需要用户专门开一次全局叠层才能看清刚挪动的供电桩范围有没有对齐——
+  // 和工具栏拖出新供电设备时 drawSpawnPreview() 已有的免按 H 预览体验对齐。
+  // getPowerRangeRect 内部走 effectiveGridPos(dev)，本来就能正确取到单设备
+  // 拖拽(draggingDeviceId)和框选批量拖拽(boxDragOrigin)两种情况下的实时位置，
+  // 这里只需要把"正在拖拽的设备"筛出来。
+  const draggedIds = new Set();
+  if (state.draggingDeviceId !== null) draggedIds.add(state.draggingDeviceId);
+  if (state.boxDragOrigin) for (const id of state.boxDragOrigin.keys()) draggedIds.add(id);
+  if (draggedIds.size === 0) return;
   ctx.save();
-  for (const r of computePowerRangeRects()) drawPowerRangeRect(r);
+  for (const dev of state.devices) {
+    if (!draggedIds.has(dev.id)) continue;
+    const r = getPowerRangeRect(dev);
+    if (r) drawPowerRangeRect(r);
+  }
   ctx.restore();
 }
 
