@@ -1,18 +1,58 @@
 // ============================================================
 // 终末地基建模拟器 - 物品图标批量抓取(浏览器控制台版)
-// 用法：在能打开 static.warfarin.wiki 的浏览器里(建议就在 wiki 物品页
-// 面上)按 F12 打开开发者工具，切到 Console 面板，粘贴整段代码回车。
-// Chrome/Edge 首次粘贴可能会提示"不要粘贴不了解的代码"，需要先手动
-// 输入 allow pasting 再回车确认一次，之后才能正常粘贴。
-// 跑完会自动下载一个 item_icons.zip，里面是抓到的所有 webp 图标，
-// 解压后把整个文件夹丢给我(或者你自己按 public/icons/items/ 这个路径
-// 放进项目里)就行。抓不到的 id(404)会在控制台打印出来，预期是
+// 用法：随便找个浏览器(不需要是 wiki 页面本身，因为下面走的是公共 CORS
+// 代理转发，不依赖当前页面的 origin)，按 F12 打开开发者工具，切到
+// Console 面板，粘贴整段代码回车。Chrome/Edge 首次粘贴可能会提示"不要
+// 粘贴不了解的代码"，需要先手动输入 allow pasting 再回车确认一次，之后
+// 才能正常粘贴。跑完会自动下载一个 item_icons.zip，里面是抓到的所有
+// webp 图标，解压后把整个文件夹丢给我(或者你自己按 public/icons/items/
+// 这个路径放进项目里)就行。抓不到的 id(404)会在控制台打印出来，预期是
 // item_fbottle_*/item_gasjar_* 这类容器+内容物组合物品，wiki 上大概率
 // 是运行时叠加渲染、没有单独出图，属于正常情况。
+//
+// static.warfarin.wiki 这个 CDN 没有下发 Access-Control-Allow-Origin，
+// 浏览器直接 fetch 会被 CORS 拦(这是你遇到的报错)。这版改成通过几个
+// 公共 CORS 代理转发请求(代理会带上允许跨域的响应头)，代码里列了三个
+// 备选，每个 id 会按顺序试，前一个不通(被公司网络墙掉/限流/挂了)就换
+// 下一个。如果三个公共代理在你这边全部连不上(公司网络把这些代理域名也
+// 一并墙了)，那基本上就是网络层面就走不通，脚本没法绕过，只能换一台没
+// 有这层限制的设备/网络跑了。
 // ============================================================
 (async () => {
   const ITEM_IDS = ["item_activity_xiranite_bottle", "item_activity_xiranite_cmpt", "item_activity_xiranite_enr_bottle", "item_activity_xiranite_enr_cmpt", "item_activity_xiranite_enr_hulu", "item_activity_xiranite_enr_tool", "item_activity_xiranite_hulu", "item_bottled_food_1", "item_bottled_food_2", "item_bottled_food_3", "item_bottled_food_4", "item_bottled_food_5", "item_bottled_rec_hp_1", "item_bottled_rec_hp_2", "item_bottled_rec_hp_3", "item_bottled_rec_hp_4", "item_bottled_rec_hp_5", "item_carbon_enr", "item_carbon_enr_powder", "item_carbon_mtl", "item_carbon_powder", "item_copper_bottle", "item_copper_cmpt", "item_copper_enr", "item_copper_enr2", "item_copper_enr2_cmpt", "item_copper_enr_bottle", "item_copper_enr_cmpt", "item_copper_jar", "item_copper_nugget", "item_copper_ore", "item_copper_powder", "item_crystal_enr", "item_crystal_enr_powder", "item_crystal_powder", "item_crystal_shell", "item_equip_script_1", "item_equip_script_2", "item_equip_script_3", "item_equip_script_4", "item_equip_script_4_1", "item_equip_script_4_2", "item_equip_script_4_3", "item_fbottle_copper_acid", "item_fbottle_copper_copper", "item_fbottle_copper_copper_enr", "item_fbottle_copper_grass_1", "item_fbottle_copper_grass_2", "item_fbottle_copper_sewage", "item_fbottle_copper_water", "item_fbottle_copper_xiranite", "item_fbottle_copper_xiranite_enr", "item_fbottle_copper_xiranite_lowpoly", "item_fbottle_copper_xiranite_poly", "item_fbottle_copperenr_acid", "item_fbottle_copperenr_copper", "item_fbottle_copperenr_copper_enr", "item_fbottle_copperenr_grass_1", "item_fbottle_copperenr_grass_2", "item_fbottle_copperenr_sewage", "item_fbottle_copperenr_water", "item_fbottle_copperenr_xiranite", "item_fbottle_copperenr_xiranite_enr", "item_fbottle_copperenr_xiranite_lowpoly", "item_fbottle_copperenr_xiranite_poly", "item_fbottle_glass_acid", "item_fbottle_glass_copper", "item_fbottle_glass_copper_enr", "item_fbottle_glass_grass_1", "item_fbottle_glass_grass_2", "item_fbottle_glass_sewage", "item_fbottle_glass_water", "item_fbottle_glass_xiranite", "item_fbottle_glass_xiranite_enr", "item_fbottle_glass_xiranite_lowpoly", "item_fbottle_glass_xiranite_poly", "item_fbottle_glassenr_acid", "item_fbottle_glassenr_copper", "item_fbottle_glassenr_copper_enr", "item_fbottle_glassenr_grass_1", "item_fbottle_glassenr_grass_2", "item_fbottle_glassenr_sewage", "item_fbottle_glassenr_water", "item_fbottle_glassenr_xiranite", "item_fbottle_glassenr_xiranite_enr", "item_fbottle_glassenr_xiranite_lowpoly", "item_fbottle_glassenr_xiranite_poly", "item_fbottle_iron_acid", "item_fbottle_iron_copper", "item_fbottle_iron_copper_enr", "item_fbottle_iron_grass_1", "item_fbottle_iron_grass_2", "item_fbottle_iron_sewage", "item_fbottle_iron_water", "item_fbottle_iron_xiranite", "item_fbottle_iron_xiranite_enr", "item_fbottle_iron_xiranite_lowpoly", "item_fbottle_iron_xiranite_poly", "item_fbottle_ironenr_acid", "item_fbottle_ironenr_copper", "item_fbottle_ironenr_copper_enr", "item_fbottle_ironenr_grass_1", "item_fbottle_ironenr_grass_2", "item_fbottle_ironenr_sewage", "item_fbottle_ironenr_water", "item_fbottle_ironenr_xiranite", "item_fbottle_ironenr_xiranite_enr", "item_fbottle_ironenr_xiranite_lowpoly", "item_fbottle_ironenr_xiranite_poly", "item_fbottle_xiranenr_grass_2", "item_filter_core", "item_gas_acid", "item_gas_copper", "item_gas_copper_enr", "item_gas_copper_enr2", "item_gas_inert", "item_gas_water", "item_gas_xiranite", "item_gas_xiranite_enr", "item_gasjar_copper_gas_acid", "item_gasjar_copper_gas_copper", "item_gasjar_copper_gas_copper_enr", "item_gasjar_copper_gas_copper_enr2", "item_gasjar_copper_gas_inert", "item_gasjar_copper_gas_water", "item_gasjar_copper_gas_xiranite", "item_gasjar_copper_gas_xiranite_enr", "item_glass_bottle", "item_glass_cmpt", "item_glass_enr_bottle", "item_glass_enr_cmpt", "item_iron_bottle", "item_iron_cmpt", "item_iron_enr", "item_iron_enr_bottle", "item_iron_enr_cmpt", "item_iron_enr_powder", "item_iron_nugget", "item_iron_ore", "item_iron_powder", "item_liquid_acid", "item_liquid_copper", "item_liquid_copper_enr", "item_liquid_plant_grass_1", "item_liquid_plant_grass_2", "item_liquid_sewage", "item_liquid_water", "item_liquid_xiranite", "item_liquid_xiranite_enr", "item_liquid_xiranite_lowpoly", "item_liquid_xiranite_poly", "item_muck_feces_1", "item_muck_xiranite_1", "item_originium_enr_powder", "item_originium_ore", "item_originium_powder", "item_plant_bbflower_1", "item_plant_bbflower_powder_1", "item_plant_bbflower_seed_1", "item_plant_grass_1", "item_plant_grass_2", "item_plant_grass_powder_1", "item_plant_grass_powder_2", "item_plant_grass_seed_1", "item_plant_grass_seed_2", "item_plant_moss_1", "item_plant_moss_2", "item_plant_moss_3", "item_plant_moss_enr_powder_1", "item_plant_moss_enr_powder_2", "item_plant_moss_powder_1", "item_plant_moss_powder_2", "item_plant_moss_powder_3", "item_plant_moss_seed_1", "item_plant_moss_seed_2", "item_plant_moss_seed_3", "item_plant_sp_1", "item_plant_sp_2", "item_plant_sp_3", "item_plant_sp_4", "item_plant_sp_seed_1", "item_plant_sp_seed_2", "item_plant_sp_seed_3", "item_plant_sp_seed_4", "item_plant_tundra_wood", "item_proc_battery_1", "item_proc_battery_2", "item_proc_battery_3", "item_proc_battery_4", "item_proc_battery_5", "item_proc_bomb_1", "item_quartz_enr", "item_quartz_enr_powder", "item_quartz_glass", "item_quartz_powder", "item_quartz_sand", "item_xiranite_enr_powder", "item_xiranite_poly", "item_xiranite_powder"];
   const ICON_URL = (id) => `https://static.warfarin.wiki/v4/itemicon/${id}.webp`;
+
+  // ---- CORS 代理候选(按顺序试，failover) ----
+  const PROXIES = [
+    (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    (u) => `https://images.weserv.nl/?url=${encodeURIComponent('ssl:' + u.replace(/^https?:\/\//, ''))}`,
+  ];
+  // 依次尝试每个代理，拿到 200 就直接返回；upstream 明确 404(物品本身没图)
+  // 记一下但还是把剩下代理也试一遍，防止个别代理把 404 误传成别的状态码；
+  // 全部代理都试完还是不行，404 优先于其它错误作为最终结论返回。
+  async function fetchIconWithFallback(id) {
+    const target = ICON_URL(id);
+    let sawNotFound = false;
+    let lastStatus = null;
+    for (const buildProxyUrl of PROXIES) {
+      try {
+        const res = await fetch(buildProxyUrl(target));
+        if (res.status === 404) {
+          sawNotFound = true;
+          continue;
+        }
+        if (res.ok) {
+          const buf = new Uint8Array(await res.arrayBuffer());
+          return { ok: true, data: buf };
+        }
+        lastStatus = res.status;
+      } catch (e) {
+        lastStatus = String(e);
+      }
+    }
+    return { ok: false, notFound: sawNotFound, status: lastStatus };
+  }
 
   // ---- 极简 ZIP 打包(仅 store，不压缩，纯浏览器原生 API，不依赖任何库) ----
   const CRC_TABLE = (() => {
@@ -101,18 +141,13 @@
   const failed = [];
   for (let i = 0; i < ITEM_IDS.length; i++) {
     const id = ITEM_IDS[i];
-    try {
-      const res = await fetch(ICON_URL(id));
-      if (res.status === 404) {
-        missing.push(id);
-      } else if (!res.ok) {
-        failed.push({ id, status: res.status });
-      } else {
-        const buf = new Uint8Array(await res.arrayBuffer());
-        files.push({ name: `${id}.webp`, data: buf });
-      }
-    } catch (e) {
-      failed.push({ id, error: String(e) });
+    const result = await fetchIconWithFallback(id);
+    if (result.ok) {
+      files.push({ name: `${id}.webp`, data: result.data });
+    } else if (result.notFound) {
+      missing.push(id);
+    } else {
+      failed.push({ id, status: result.status });
     }
     if ((i + 1) % 20 === 0) console.log(`...${i + 1}/${ITEM_IDS.length}`);
   }
