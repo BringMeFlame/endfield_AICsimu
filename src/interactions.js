@@ -29,7 +29,8 @@ import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 import {
   getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeSlotCandidates,
-  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS, getPortSlotDescriptors
+  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS, getPortSlotDescriptors,
+  CATALYST_ITEM_BY_FACILITY
 } from './recipeSlots.js';
 import { ITEMS, ITEM_BY_ID } from './data/items.js';
 
@@ -83,6 +84,8 @@ const BELT_UI = {
   portKind: 'belt',
   getStart: () => state.freeBeltStart,
   setStart: v => { state.freeBeltStart = v; },
+  getStartDownPos: () => state.freeBeltStartDownPos,
+  setStartDownPos: v => { state.freeBeltStartDownPos = v; },
   getPreviewPts: () => state.freeBeltPreviewPts,
   setPreviewPts: v => { state.freeBeltPreviewPts = v; },
   setHoverDeviceId: v => { state.freeBeltHoverDeviceId = v; },
@@ -99,6 +102,8 @@ const PIPE_UI = {
   portKind: 'pipe',
   getStart: () => state.freePipeStart,
   setStart: v => { state.freePipeStart = v; },
+  getStartDownPos: () => state.freePipeStartDownPos,
+  setStartDownPos: v => { state.freePipeStartDownPos = v; },
   getPreviewPts: () => state.freePipePreviewPts,
   setPreviewPts: v => { state.freePipePreviewPts = v; },
   setHoverDeviceId: v => { state.freePipeHoverDeviceId = v; },
@@ -419,6 +424,25 @@ function finalizeFreeConnection(ui, endResolved, clientX, clientY) {
     ui.setSelected(null);
   }
   draw();
+}
+
+// "起点按下拖拽→终点松手"手感支持：配合 mousedown 里设起点 A 时记下的
+// state.freeBeltStartDownPos/freePipeStartDownPos(见 state.js 该字段注释)，
+// 在紧跟着的下一次 mouseup 里判断这段时间鼠标是否真的挪动过——挪动超过阈值
+// 才当作一次拖拽画线，直接解析终点并落地；原地不动(或抖动量在阈值内)则视为
+// 单纯"点一下设起点"的第一次点击，不做任何事，保留起点等用户后续再点一次终点
+// (即"点击起点→点击终点"这套既有手感)。阈值沿用项目里框选批量拖拽同款的
+// dx*dx+dy*dy>16(4px)。downPos 每次调用都会被消费掉(置回 null)，所以只有
+// "刚设完起点、还没经历过一次 mouseup"这一次窗口期内会触发，第二次点击终点
+// 那次 click 已经在 mousedown 的 else 分支里同步完成，不会重复触发这里。
+function resolveDragReleaseEnd(ui, clientX, clientY) {
+  const downPos = ui.getStartDownPos();
+  ui.setStartDownPos(null);
+  if (!downPos || !ui.getStart()) return;
+  const dx = clientX - downPos.x, dy = clientY - downPos.y;
+  if (dx * dx + dy * dy <= 16) return;
+  const end = resolveFreeEndClick(ui, clientX, clientY);
+  if (end) finalizeFreeConnection(ui, end, clientX, clientY);
 }
 
 // Alt+左键点击已有连线任意一格：原地生成分流器节点，并自动进入对应的自由画线
@@ -941,6 +965,7 @@ function bindCanvasMouseEvents() {
         const start = resolveFreeStartClick(BELT_UI, e.clientX, e.clientY);
         if (start) {
           state.freeBeltStart = start;
+          state.freeBeltStartDownPos = { x: e.clientX, y: e.clientY };
           updateFreePreview(BELT_UI, e.clientX, e.clientY);
           draw();
         }
@@ -957,6 +982,7 @@ function bindCanvasMouseEvents() {
         const start = resolveFreeStartClick(PIPE_UI, e.clientX, e.clientY);
         if (start) {
           state.freePipeStart = start;
+          state.freePipeStartDownPos = { x: e.clientX, y: e.clientY };
           updateFreePreview(PIPE_UI, e.clientX, e.clientY);
           draw();
         }
@@ -1197,11 +1223,13 @@ function bindCanvasMouseEvents() {
     if (state.freeBeltMode) {
       state.freeBeltMode = false;
       state.freeBeltStart = null;
+      state.freeBeltStartDownPos = null;
       state.freeBeltPreviewPts = null;
       state.freeBeltHoverDeviceId = null;
     } else {
       state.freePipeMode = false;
       state.freePipeStart = null;
+      state.freePipeStartDownPos = null;
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
     }
@@ -1433,6 +1461,18 @@ function bindCanvasMouseEvents() {
     }
     if (state.boxSelectPointerDown) {
       resolveBoxSelectClickToggle();
+      draw();
+      return;
+    }
+    // "起点按下拖拽→终点松手"手感：只有紧跟着设起点 A 那次 mousedown 的这一次
+    // mouseup 才会命中(downPos 非空)，具体阈值判断和落地逻辑见 resolveDragReleaseEnd。
+    if (state.freeBeltMode && state.freeBeltStartDownPos) {
+      resolveDragReleaseEnd(BELT_UI, e.clientX, e.clientY);
+      draw();
+      return;
+    }
+    if (state.freePipeMode && state.freePipeStartDownPos) {
+      resolveDragReleaseEnd(PIPE_UI, e.clientX, e.clientY);
       draw();
       return;
     }
@@ -1674,11 +1714,10 @@ function bindCanvasMouseEvents() {
         // 坐标和拖拽前一致)不应该顺手抹掉用户为这台设备的连线摆的造型。
         if (actuallyMoved) clearWaypointsForDevice(dev.id);
         recomputeAllFlows();
-        // 真的挪动过位置(不是单纯点击选中)时，落位后自动取消选中，不需要用户
-        // 再点一下空白处才能清掉高亮——单纯点击选中的手感不受影响。移动后压坏
-        // 别的合法连线/越界不再整体撤回，压坏的连线显示红色 invalid、越界的
-        // 设备标红(见 devices.js 的 computeOutOfBoundsIds)，操作本身永远成功。
-        if (actuallyMoved) state.selectedId = null;
+        // 移动后保留选中状态(不像工具栏拖出新设备那样清空)，方便用户挪完接着
+        // 旋转/继续操作。压坏别的合法连线/越界不再整体撤回，压坏的连线显示红色
+        // invalid、越界的设备标红(见 devices.js 的 computeOutOfBoundsIds)，
+        // 操作本身永远成功。
       }
     }
     state.draggingDeviceId = null;
@@ -1778,6 +1817,7 @@ function bindKeyboardEvents() {
       e.preventDefault();
       state.freeBeltMode = !state.freeBeltMode;
       state.freeBeltStart = null;
+      state.freeBeltStartDownPos = null;
       state.freeBeltPreviewPts = null;
       state.freeBeltHoverDeviceId = null;
       if (state.freeBeltMode) {
@@ -1787,6 +1827,7 @@ function bindKeyboardEvents() {
         // 一律清空。
         state.freePipeMode = false;
         state.freePipeStart = null;
+        state.freePipeStartDownPos = null;
         state.freePipePreviewPts = null;
         state.freePipeHoverDeviceId = null;
         state.draggingWaypoint = null;
@@ -1822,12 +1863,14 @@ function bindKeyboardEvents() {
       e.preventDefault();
       state.freePipeMode = !state.freePipeMode;
       state.freePipeStart = null;
+      state.freePipeStartDownPos = null;
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
       if (state.freePipeMode) {
         // 镜像上面的 E 键处理，且同样清空自由传送带模式和框选批量选中。
         state.freeBeltMode = false;
         state.freeBeltStart = null;
+        state.freeBeltStartDownPos = null;
         state.freeBeltPreviewPts = null;
         state.freeBeltHoverDeviceId = null;
         state.draggingWaypoint = null;
@@ -2204,6 +2247,24 @@ function renderRecipePanel() {
   };
   const inputEls = INPUT_GROUPS.flatMap(buildEls);
   const outputEls = OUTPUT_GROUPS.flatMap(buildEls);
+
+  // 固气/液气转化机额外叠加的催化剂圆槽位(见 recipeSlots.js 的
+  // CATALYST_ITEM_BY_FACILITY)：存在 dev.portItems.catalyst 里，不属于任何
+  // INPUT_GROUPS/OUTPUT_GROUPS，抽屉侧走 group='port' 的既有分支(和热能池
+  // 燃料槽位同一套)。这一行排在 columns 之前 append，DOM 顺序上位于两栏+
+  // 箭头那一行之上；这 4 台设备的输入/输出都只有 1 个槽位，两栏等宽，
+  // .recipe-panel-columns 的 justify-content:center 会让箭头精确落在内容区
+  // 水平中点，这里同样居中就能让圆槽位正好落在箭头正上方。
+  if (CATALYST_ITEM_BY_FACILITY.has(dev.facilityId)) {
+    const catalystRow = document.createElement('div');
+    catalystRow.className = 'recipe-panel-catalyst-row';
+    catalystRow.appendChild(buildSlotButton(
+      'circle', dev.portItems.catalyst,
+      () => { setSlotValue(dev, 'port', 'catalyst', null); renderRecipePanel(); },
+      () => showItemPicker(dev.id, 'port', 'catalyst')
+    ));
+    recipePanelBodyEl.appendChild(catalystRow);
+  }
 
   const columns = document.createElement('div');
   columns.className = 'recipe-panel-columns';

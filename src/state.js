@@ -77,12 +77,21 @@ export const state = {
   freeBeltStart: null,
   freeBeltPreviewPts: null, // 实时预览折线(世界坐标点数组)，随鼠标移动重算
   freeBeltHoverDeviceId: null, // 悬停在某设备本体(非精确端口)上时高亮该设备
+  // 设起点 A 那次 mousedown 按下的屏幕坐标，只为紧跟着的下一次 mouseup 服务：
+  // 如果那次 mouseup 落点相对这里移动超过阈值，说明用户是"按住起点拖拽到终点
+  // 再松手"而不是"点一下起点、松手、再点一下终点"，mouseup 里据此直接解析终点
+  // 落地，不强制要求再点一次(见 mousedown/mouseup 里的 resolveDragReleaseEnd)。
+  // 每次 mouseup 处理完(不管识别成点击还是拖拽)都会置回 null，所以只有"刚设完
+  // 起点、还没经历过一次 mouseup"这一次窗口期内非空，第二次点击终点那次 click
+  // 已经在 mousedown 里同步完成，不会重复触发。
+  freeBeltStartDownPos: null,
 
   // ---- 自由管道模式(Q 键切换)：与 freeBeltMode 同构，且与之互斥(进入一个要清空另一个) ----
   freePipeMode: false,
   freePipeStart: null, // 同 freeBeltStart 的 kind 结构
   freePipePreviewPts: null,
   freePipeHoverDeviceId: null,
+  freePipeStartDownPos: null, // 同 freeBeltStartDownPos
 
   // ---- 框选批量操作：普通模式下随时可用的多选机制，不是一个需要切换进入/退出
   // 的独立工具模式(早期版本用 X 键切换专属"框选模式"，长按已选中项才能触发批量
