@@ -194,28 +194,31 @@ canvas {
   overflow-y: auto;
   flex: 1;
 }
-.recipe-slot-group {
-  margin-bottom: 14px;
+/* 原料在左、产物在右，中间一个箭头(不写"输入"/"产出"文字，方向本身已经
+   说明白了，用户明确要求)。两栏各自纵向堆叠，把居中浮层右侧原来空出来的
+   留白利用起来，而不是所有槽位挤在一列里。 */
+.recipe-panel-columns {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
 }
-.recipe-slot-group:last-child {
-  margin-bottom: 0;
-}
-.recipe-slot-group-title {
-  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  font-size: 11px;
-  font-weight: 900;
-  color: #888;
-  margin-bottom: 6px;
-}
-.recipe-slot-row {
+.recipe-slot-column {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
 }
-/* 槽位形状：方形=固体、圆形=流体，和游戏保持一致(用户明确要求的一条)。空
-   槽位显示一个 "+"，已填槽位显示物品名(过长会被截断，完整名称走 title 悬浮
-   提示)，右上角叠一个小 "×" 单独清空这一个槽位，防止"清空全部"这种大动作
-   之外还需要更细粒度的误触恢复手段。 */
+.recipe-panel-arrow {
+  font-size: 22px;
+  font-weight: 900;
+  color: #ccc;
+  line-height: 1;
+  padding: 0 4px;
+}
+/* 槽位形状：方形(直角，不带圆角)=固体、圆形=流体，和游戏保持一致(用户明确
+   要求的一条)。空槽位显示一个 "+"，已填槽位显示物品名(过长会被截断，完整
+   名称走 title 悬浮提示)，右上角叠一个小 "×" 单独清空这一个槽位，防止
+   "清空全部"这种大动作之外还需要更细粒度的误触恢复手段。 */
 .recipe-slot {
   position: relative;
   width: 64px;
@@ -230,7 +233,7 @@ canvas {
   padding: 4px;
 }
 .recipe-slot-square {
-  border-radius: 6px;
+  border-radius: 0;
 }
 .recipe-slot-circle {
   border-radius: 50%;
@@ -432,7 +435,7 @@ canvas {
 }
 .item-picker-cell-solid .item-picker-icon,
 .item-picker-cell-solid .item-picker-icon-fallback {
-  border-radius: 6px;
+  border-radius: 0; /* 固体=直角方形，和槽位面板的 .recipe-slot-square 一致 */
 }
 .item-picker-cell-fluid .item-picker-icon,
 .item-picker-cell-fluid .item-picker-icon-fallback {

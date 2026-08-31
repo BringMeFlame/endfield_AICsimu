@@ -28,8 +28,8 @@ import {
 import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 import {
-  getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeInputCandidates,
-  computeOutputCandidates, getRelevantItemIds, setSlotValue, clearAllSlots, PORT_ITEM_FACILITY_IDS
+  getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeSlotCandidates,
+  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS
 } from './recipeSlots.js';
 import { ITEMS, ITEM_BY_ID } from './data/items.js';
 
@@ -1981,8 +1981,10 @@ function placeCoreDevice(mapDef) {
     isLowProfile: facility.isLowProfile,
     locked: true, // 核心：禁止删除/复制(见 keydown 的 Delete 分支、buildClipboardFromSelection、
                  // performBoxSelectDelete)，但可以正常移动/旋转/接线，不受这个标记影响。
-    // 协议核心/次级核心在 PORT_ITEM_FACILITY_IDS 里，走"自由选物品"槽位面板
-    // (端口即槽位)，和工具栏拖拽生成新设备那条路径共用同一个 buildInitialSlotState。
+    // 协议核心/次级核心的槽位面板体验不好(端口一多显示很乱)，用户已确认
+    // 暂时不需要，没有把这两个 id 放进 recipeSlots.js 的 PORT_ITEM_FACILITY_IDS，
+    // buildInitialSlotState 对它们返回 {}；这行调用留着是为了和工具栏拖拽生成
+    // 新设备那条路径保持同一个入口，不是特意要给核心塞槽位数据。
     ...buildInitialSlotState(facility.id)
   };
   state.devices.push(core);
@@ -2106,13 +2108,12 @@ function hideRecipePanel() {
   recipePanelOverlayEl.style.display = 'none';
 }
 
-// 槽位组的形状(方/圆，和游戏一致)+ 面板里的分组标题，四个 recipe 模式槽位组
-// 共用；'port' 模式的形状直接看端口本身的 belt/fluid 类型，不查这张表。
-const SLOT_GROUP_META = {
-  inputSolid: { shape: 'square', title: '输入 · 固体' },
-  inputFluid: { shape: 'circle', title: '输入 · 流体' },
-  outputSolid: { shape: 'square', title: '产出 · 固体' },
-  outputFluid: { shape: 'circle', title: '产出 · 流体' }
+// 槽位组的形状(方=固体、圆=流体，和游戏一致)，四个 recipe 模式槽位组共用；
+// 'port' 模式的形状直接看端口本身的 belt/fluid 类型，不查这张表。不再维护
+// 中文标题文字——原料在左、产物在右、中间一个箭头，方向本身已经说明白了
+// "这是原料还是产物"，不需要额外文字(用户明确要求)。
+const SLOT_GROUP_SHAPE = {
+  inputSolid: 'square', inputFluid: 'circle', outputSolid: 'square', outputFluid: 'circle'
 };
 
 function buildSlotButton(shape, itemId, onClear, onOpen) {
@@ -2142,18 +2143,11 @@ function buildSlotButton(shape, itemId, onClear, onOpen) {
   return btn;
 }
 
-function appendSlotGroup(container, title, shape, els) {
-  const box = document.createElement('div');
-  box.className = 'recipe-slot-group';
-  const heading = document.createElement('div');
-  heading.className = 'recipe-slot-group-title';
-  heading.textContent = title;
-  box.appendChild(heading);
-  const row = document.createElement('div');
-  row.className = 'recipe-slot-row';
-  for (const el of els) row.appendChild(el);
-  box.appendChild(row);
-  container.appendChild(box);
+function buildSlotColumn(els) {
+  const col = document.createElement('div');
+  col.className = 'recipe-slot-column';
+  for (const el of els) col.appendChild(el);
+  return col;
 }
 
 function renderRecipePanel() {
@@ -2164,21 +2158,20 @@ function renderRecipePanel() {
   const kind = getSlotPanelKind(dev);
 
   if (kind === 'port') {
-    const solidEls = [];
-    const fluidEls = [];
-    for (const port of dev.ports || []) {
+    // 'port' 模式目前没有哪个设备会同时有输入口和输出口(核心那种"进出都有"
+    // 的设备已经不走这条槽位面板了，见 recipeSlots.js 的 PORT_ITEM_FACILITY_IDS
+    // 注释)，单列平铺即可，不需要两栏+箭头。
+    const els = (dev.ports || []).map((port) => {
       const isFluid = port.type.startsWith('fluid');
       const itemId = dev.portItems[port.id];
-      const el = buildSlotButton(
+      return buildSlotButton(
         isFluid ? 'circle' : 'square',
         itemId,
         () => { setSlotValue(dev, 'port', port.id, null); renderRecipePanel(); },
         () => showItemPicker(dev.id, 'port', port.id)
       );
-      (isFluid ? fluidEls : solidEls).push(el);
-    }
-    if (solidEls.length) appendSlotGroup(recipePanelBodyEl, '固体端口', 'square', solidEls);
-    if (fluidEls.length) appendSlotGroup(recipePanelBodyEl, '流体端口', 'circle', fluidEls);
+    });
+    recipePanelBodyEl.appendChild(buildSlotColumn(els));
     return;
   }
 
@@ -2194,18 +2187,32 @@ function renderRecipePanel() {
     return;
   }
 
-  for (const group of ['inputSolid', 'inputFluid', 'outputSolid', 'outputFluid']) {
+  // 原料在左、产物在右，中间一个箭头——不再按固体/流体分组标题堆叠成一整
+  // 列，两栏并排把右侧空白利用起来(用户明确要求)；哪个先选都行(见
+  // recipeSlots.js 的 isRecipeViable)，UI 上不需要区分"必须先选哪边"。
+  const buildEls = (group) => {
     const arr = dev.slotValues[group];
-    if (!arr) continue;
-    const meta = SLOT_GROUP_META[group];
-    const els = arr.map((itemId, index) => buildSlotButton(
-      meta.shape,
+    if (!arr) return [];
+    const shape = SLOT_GROUP_SHAPE[group];
+    return arr.map((itemId, index) => buildSlotButton(
+      shape,
       itemId,
       () => { setSlotValue(dev, group, index, null); renderRecipePanel(); },
       () => showItemPicker(dev.id, group, index)
     ));
-    appendSlotGroup(recipePanelBodyEl, meta.title, meta.shape, els);
-  }
+  };
+  const inputEls = INPUT_GROUPS.flatMap(buildEls);
+  const outputEls = OUTPUT_GROUPS.flatMap(buildEls);
+
+  const columns = document.createElement('div');
+  columns.className = 'recipe-panel-columns';
+  columns.appendChild(buildSlotColumn(inputEls));
+  const arrow = document.createElement('div');
+  arrow.className = 'recipe-panel-arrow';
+  arrow.textContent = '→';
+  columns.appendChild(arrow);
+  columns.appendChild(buildSlotColumn(outputEls));
+  recipePanelBodyEl.appendChild(columns);
 }
 
 function bindRecipePanelEvents() {
@@ -2235,7 +2242,8 @@ function currentPickerPortType() {
 }
 
 // 抽屉里点击可选中的候选范围：'port' 模式没有配方可收紧，全部同 portType 物品
-// 都能选；'recipe' 模式下输入槽/输出槽分别走 recipeSlots.js 的两套收紧算法。
+// 都能选；'recipe' 模式下原料槽位/产物槽位调用同一个双向收紧算法(见
+// recipeSlots.js 的 computeSlotCandidates)，哪个先选都行。
 function currentPickerCandidateIds() {
   const t = state.itemPickerTarget;
   if (!t) return new Set();
@@ -2245,10 +2253,15 @@ function currentPickerCandidateIds() {
     const portType = currentPickerPortType();
     return new Set(ITEMS.filter((i) => i.portType === portType).map((i) => i.id));
   }
-  if (t.group === 'inputSolid' || t.group === 'inputFluid') {
-    return computeInputCandidates(dev.facilityId, dev.slotValues, t.group);
-  }
-  return computeOutputCandidates(dev.facilityId, dev.slotValues, t.group);
+  // 重新点开一个已经填过的槽位时，要按"这个槽位当前是空的"来算候选，否则它
+  // 自己现在的值会被 computeSlotCandidates 当成"已选"从候选里排除掉，导致
+  // 点开一个已经填了"碳粉末"的槽位，"碳粉末"本身反而不在可选列表里这种怪现象。
+  const arr = dev.slotValues[t.group];
+  const original = arr[t.index];
+  arr[t.index] = null;
+  const candidates = computeSlotCandidates(dev.facilityId, dev.slotValues, t.group);
+  arr[t.index] = original;
+  return candidates;
 }
 
 // 抽屉里"浏览"用的物品池，和上面能不能点选(candidateIds)是两回事：'全部物品'

@@ -229,6 +229,16 @@ export function computeUnpoweredIds() {
   return unpowered;
 }
 
+// 热能池的槽位("port"模式，见 recipeSlots.js，任何固体都能物理放进去)里
+// 真正能烧的只有这几样，其余固体虽然能放进槽位、但要提示烧不了。写在这里
+// 而不是 recipeSlots.js，是因为警告图标+悬停浮窗这套框架本来就在这个文件，
+// 不重复建一套判定入口。
+const HEAT_POOL_FUEL_ITEM_IDS = new Set([
+  'item_originium_ore', 'item_plant_tundra_wood',
+  'item_proc_battery_1', 'item_proc_battery_2', 'item_proc_battery_3',
+  'item_proc_battery_4', 'item_proc_battery_5'
+]);
+
 // ---- 设备警告(图标+悬停提示) ----
 // 统一的小图标+悬停浮窗框架：往这个数组里按条件追加一行文字即可接入新的警告
 // 类型(如未来的"带宽超限"等)，不需要改动图标绘制(render.js)或悬停命中判定
@@ -236,6 +246,10 @@ export function computeUnpoweredIds() {
 export function getDeviceWarnings(dev, unpoweredIds) {
   const warnings = [];
   if (unpoweredIds.has(dev.id)) warnings.push('设备未通电');
+  if (dev.facilityId === 'dev_热能池' && dev.portItems &&
+      Object.values(dev.portItems).some((id) => id && !HEAT_POOL_FUEL_ITEM_IDS.has(id))) {
+    warnings.push('槽位内有物品无法作为热能池燃料使用（仅源矿/原木/各类电池可用）');
+  }
   return warnings;
 }
 
