@@ -193,6 +193,13 @@ canvas {
 #recipe-panel-body {
   overflow-y: auto;
   flex: 1;
+  /* padding-top + 等量负 margin-top：只留出滚动裁剪区域的上边缘缓冲，不改变
+     视觉起始位置。槽位列第一行的 .recipe-slot-clear 用 top:-8px 探出槽位本身
+     之上，如果没有这圈缓冲，第一行的删除角标会被 overflow-y:auto 从裁剪盒
+     顶边直接切掉一截(同一列有 2 个以上槽位时最容易观察到——第二行往下的
+     删除角标本来就在裁剪盒内部，不受影响，只有紧贴顶边的第一行会被切)。 */
+  padding-top: 10px;
+  margin-top: -10px;
 }
 /* 原料在左、产物在右，中间一个箭头(不写"输入"/"产出"文字，方向本身已经
    说明白了，用户明确要求)。用 flex 而不是"两个 1fr 轨道"的 grid——1fr 轨道

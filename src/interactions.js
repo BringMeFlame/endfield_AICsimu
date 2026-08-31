@@ -1674,11 +1674,10 @@ function bindCanvasMouseEvents() {
         // 坐标和拖拽前一致)不应该顺手抹掉用户为这台设备的连线摆的造型。
         if (actuallyMoved) clearWaypointsForDevice(dev.id);
         recomputeAllFlows();
-        // 真的挪动过位置(不是单纯点击选中)时，落位后自动取消选中，不需要用户
-        // 再点一下空白处才能清掉高亮——单纯点击选中的手感不受影响。移动后压坏
-        // 别的合法连线/越界不再整体撤回，压坏的连线显示红色 invalid、越界的
-        // 设备标红(见 devices.js 的 computeOutOfBoundsIds)，操作本身永远成功。
-        if (actuallyMoved) state.selectedId = null;
+        // 移动后保留选中状态(不像工具栏拖出新设备那样清空)，方便用户挪完接着
+        // 旋转/继续操作。压坏别的合法连线/越界不再整体撤回，压坏的连线显示红色
+        // invalid、越界的设备标红(见 devices.js 的 computeOutOfBoundsIds)，
+        // 操作本身永远成功。
       }
     }
     state.draggingDeviceId = null;
