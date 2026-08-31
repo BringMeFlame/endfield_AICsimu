@@ -21,13 +21,14 @@
   同步**——以后 xlsx 里的物品增删了，这份 json 要手动重新导出一次（现在
   是我用一次性脚本导的，还没写成可重复跑的同步工具，属于已知的手动步骤）。
 
-## 数据来源与已知缺口
+## 数据来源
 
 原始 wiki 抓取数据（`recipes.txt`/`item_list.txt`，305 条配方原始 JSON +
-物品中文名清单）在另一个分支 `claude/infrastructure-simulator-items-recipes-0rag21`
-的 `reference/raw/` 下，**还没合并进这条分支**——目前这里只有从那份原始
-数据加工出来的 xlsx 模板，没有原始抓取文件本身。要不要把 `raw/` 也合过来
-留档，还是保持现状（原始数据只在那条分支上留一份），需要再确认一下。
+物品中文名清单）曾经留在另一个分支 `claude/infrastructure-simulator-items-recipes-0rag21`
+的 `reference/raw/` 下。已确认这里的 `items_recipes_template.xlsx`/
+`item_ids.json` 以及 `src/data/items.js`/`src/data/recipes.js` 就是从那份
+原始数据核对加工出的最终版本，原始抓取文件本身不再需要留档，对应分支
+已删除。
 
 ## 设计要点（供后续接入 `src/` 代码时参考，不是这份数据本身的字段）
 
