@@ -48,9 +48,11 @@ export function undo() {
   state.pipeEndpointDrag = null;
   state.pipeOutputEndpointDrag = null;
   state.freeBeltStart = null;
+  state.freeBeltStartDownPos = null;
   state.freeBeltPreviewPts = null;
   state.freeBeltHoverDeviceId = null;
   state.freePipeStart = null;
+  state.freePipeStartDownPos = null;
   state.freePipePreviewPts = null;
   state.freePipeHoverDeviceId = null;
   state.lastConduitClickCell = null;

@@ -83,6 +83,8 @@ const BELT_UI = {
   portKind: 'belt',
   getStart: () => state.freeBeltStart,
   setStart: v => { state.freeBeltStart = v; },
+  getStartDownPos: () => state.freeBeltStartDownPos,
+  setStartDownPos: v => { state.freeBeltStartDownPos = v; },
   getPreviewPts: () => state.freeBeltPreviewPts,
   setPreviewPts: v => { state.freeBeltPreviewPts = v; },
   setHoverDeviceId: v => { state.freeBeltHoverDeviceId = v; },
@@ -99,6 +101,8 @@ const PIPE_UI = {
   portKind: 'pipe',
   getStart: () => state.freePipeStart,
   setStart: v => { state.freePipeStart = v; },
+  getStartDownPos: () => state.freePipeStartDownPos,
+  setStartDownPos: v => { state.freePipeStartDownPos = v; },
   getPreviewPts: () => state.freePipePreviewPts,
   setPreviewPts: v => { state.freePipePreviewPts = v; },
   setHoverDeviceId: v => { state.freePipeHoverDeviceId = v; },
@@ -419,6 +423,25 @@ function finalizeFreeConnection(ui, endResolved, clientX, clientY) {
     ui.setSelected(null);
   }
   draw();
+}
+
+// "起点按下拖拽→终点松手"手感支持：配合 mousedown 里设起点 A 时记下的
+// state.freeBeltStartDownPos/freePipeStartDownPos(见 state.js 该字段注释)，
+// 在紧跟着的下一次 mouseup 里判断这段时间鼠标是否真的挪动过——挪动超过阈值
+// 才当作一次拖拽画线，直接解析终点并落地；原地不动(或抖动量在阈值内)则视为
+// 单纯"点一下设起点"的第一次点击，不做任何事，保留起点等用户后续再点一次终点
+// (即"点击起点→点击终点"这套既有手感)。阈值沿用项目里框选批量拖拽同款的
+// dx*dx+dy*dy>16(4px)。downPos 每次调用都会被消费掉(置回 null)，所以只有
+// "刚设完起点、还没经历过一次 mouseup"这一次窗口期内会触发，第二次点击终点
+// 那次 click 已经在 mousedown 的 else 分支里同步完成，不会重复触发这里。
+function resolveDragReleaseEnd(ui, clientX, clientY) {
+  const downPos = ui.getStartDownPos();
+  ui.setStartDownPos(null);
+  if (!downPos || !ui.getStart()) return;
+  const dx = clientX - downPos.x, dy = clientY - downPos.y;
+  if (dx * dx + dy * dy <= 16) return;
+  const end = resolveFreeEndClick(ui, clientX, clientY);
+  if (end) finalizeFreeConnection(ui, end, clientX, clientY);
 }
 
 // Alt+左键点击已有连线任意一格：原地生成分流器节点，并自动进入对应的自由画线
@@ -941,6 +964,7 @@ function bindCanvasMouseEvents() {
         const start = resolveFreeStartClick(BELT_UI, e.clientX, e.clientY);
         if (start) {
           state.freeBeltStart = start;
+          state.freeBeltStartDownPos = { x: e.clientX, y: e.clientY };
           updateFreePreview(BELT_UI, e.clientX, e.clientY);
           draw();
         }
@@ -957,6 +981,7 @@ function bindCanvasMouseEvents() {
         const start = resolveFreeStartClick(PIPE_UI, e.clientX, e.clientY);
         if (start) {
           state.freePipeStart = start;
+          state.freePipeStartDownPos = { x: e.clientX, y: e.clientY };
           updateFreePreview(PIPE_UI, e.clientX, e.clientY);
           draw();
         }
@@ -1197,11 +1222,13 @@ function bindCanvasMouseEvents() {
     if (state.freeBeltMode) {
       state.freeBeltMode = false;
       state.freeBeltStart = null;
+      state.freeBeltStartDownPos = null;
       state.freeBeltPreviewPts = null;
       state.freeBeltHoverDeviceId = null;
     } else {
       state.freePipeMode = false;
       state.freePipeStart = null;
+      state.freePipeStartDownPos = null;
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
     }
@@ -1433,6 +1460,18 @@ function bindCanvasMouseEvents() {
     }
     if (state.boxSelectPointerDown) {
       resolveBoxSelectClickToggle();
+      draw();
+      return;
+    }
+    // "起点按下拖拽→终点松手"手感：只有紧跟着设起点 A 那次 mousedown 的这一次
+    // mouseup 才会命中(downPos 非空)，具体阈值判断和落地逻辑见 resolveDragReleaseEnd。
+    if (state.freeBeltMode && state.freeBeltStartDownPos) {
+      resolveDragReleaseEnd(BELT_UI, e.clientX, e.clientY);
+      draw();
+      return;
+    }
+    if (state.freePipeMode && state.freePipeStartDownPos) {
+      resolveDragReleaseEnd(PIPE_UI, e.clientX, e.clientY);
       draw();
       return;
     }
@@ -1777,6 +1816,7 @@ function bindKeyboardEvents() {
       e.preventDefault();
       state.freeBeltMode = !state.freeBeltMode;
       state.freeBeltStart = null;
+      state.freeBeltStartDownPos = null;
       state.freeBeltPreviewPts = null;
       state.freeBeltHoverDeviceId = null;
       if (state.freeBeltMode) {
@@ -1786,6 +1826,7 @@ function bindKeyboardEvents() {
         // 一律清空。
         state.freePipeMode = false;
         state.freePipeStart = null;
+        state.freePipeStartDownPos = null;
         state.freePipePreviewPts = null;
         state.freePipeHoverDeviceId = null;
         state.draggingWaypoint = null;
@@ -1821,12 +1862,14 @@ function bindKeyboardEvents() {
       e.preventDefault();
       state.freePipeMode = !state.freePipeMode;
       state.freePipeStart = null;
+      state.freePipeStartDownPos = null;
       state.freePipePreviewPts = null;
       state.freePipeHoverDeviceId = null;
       if (state.freePipeMode) {
         // 镜像上面的 E 键处理，且同样清空自由传送带模式和框选批量选中。
         state.freeBeltMode = false;
         state.freeBeltStart = null;
+        state.freeBeltStartDownPos = null;
         state.freeBeltPreviewPts = null;
         state.freeBeltHoverDeviceId = null;
         state.draggingWaypoint = null;
