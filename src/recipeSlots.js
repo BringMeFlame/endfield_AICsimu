@@ -58,16 +58,29 @@ export function getSlotPanelKind(dev) {
   return null;
 }
 
+// 'port' 模式默认一个端口对应一个槽位，但热能池比较特殊：虽然有 2 个传送带
+// 输入口，但同一时刻只处理一种燃料(不是两个口各自独立烧不同东西)，槽位数不
+// 能跟着端口数走，只给一个虚拟槽位(key 不对应任何真实 port.id，纯粹是槽位
+// 面板/物品选择抽屉用来标识"这个槽位"的键)。除了这一个特例，其余 'port' 模式
+// 设备都是端口数=槽位数，直接从 ports 派生。
+export function getPortSlotDescriptors(facilityId) {
+  if (facilityId === 'dev_热能池') {
+    return [{ key: 'fuel', shape: 'square' }];
+  }
+  const f = FACILITY_BY_ID.get(facilityId);
+  return ((f && f.ports) || []).map((p) => ({
+    key: p.id,
+    shape: p.type.startsWith('fluid') ? 'circle' : 'square'
+  }));
+}
+
 // 落地新设备时调用(interactions.js 工具栏 mouseup/核心摆放)，按种类生成初始
 // 槽位数据结构，两种槽位面板各自的字段互斥，都不适用的设备两个字段都是
-// undefined。'recipe' 模式落地即跑一遍 normalizeSlotValues——如果这台设备
-// 全局就只有一种配方，槽位应该直接摆出那唯一的结果，不需要用户手动点一遍
-// (见下方 autoFillSingletons 的说明)。
+// undefined。
 export function buildInitialSlotState(facilityId) {
   if (PORT_ITEM_FACILITY_IDS.has(facilityId)) {
-    const f = FACILITY_BY_ID.get(facilityId);
     const portItems = {};
-    for (const p of (f && f.ports) || []) portItems[p.id] = null;
+    for (const d of getPortSlotDescriptors(facilityId)) portItems[d.key] = null;
     return { portItems };
   }
   const spec = getFacilitySlotSpec(facilityId);
@@ -79,7 +92,6 @@ export function buildInitialSlotState(facilityId) {
   for (const key of SLOT_GROUPS) {
     if (spec[key] != null) slotValues[key] = new Array(spec[key]).fill(null);
   }
-  normalizeSlotValues(facilityId, slotValues);
   return { slotValues };
 }
 
@@ -162,86 +174,27 @@ function pruneInvalidSelections(facilityId, slotValues) {
   return changed;
 }
 
-// 把"收紧到只剩一个候选"的空槽位直接填上，不需要用户再手动点一次——一个萝卜
-// 一个坑，唯一解就没什么好选的。返回是否有变化。
-function autoFillSingletons(facilityId, slotValues) {
-  let changed = false;
-  for (const group of SLOT_GROUPS) {
-    const arr = slotValues[group];
-    if (!arr) continue;
-    for (let i = 0; i < arr.length; i++) {
-      if (arr[i]) continue;
-      const candidates = computeSlotCandidates(facilityId, slotValues, group);
-      if (candidates.size === 1) {
-        arr[i] = [...candidates][0];
-        changed = true;
-      }
-    }
-  }
-  return changed;
-}
-
-// 唯一还可行的配方(没有就返回 null)。和 isRecipeViable 用的是同一份已选
-// 集合，只是这里要的是"还剩几条"而不是某个槽位组的候选并集。
-function findSingleViableRecipe(facilityId, slotValues) {
-  const selectedInputs = collectSelectedIds(slotValues, INPUT_GROUPS);
-  const selectedOutputs = collectSelectedIds(slotValues, OUTPUT_GROUPS);
-  const viable = (RECIPES[facilityId] || []).filter((r) => isRecipeViable(r, selectedInputs, selectedOutputs));
-  return viable.length === 1 ? viable[0] : null;
-}
-
-// autoFillSingletons 只能处理"这个槽位组的候选并集只剩一个物品"的情况——如果
-// 唯一可行的配方本身需要两个不同物品、而对应的槽位组恰好有两个空位，两个空位
-// 各自看到的候选并集都是那两个物品(size===2)，autoFillSingletons 判断不出该填
-// 哪个。这种时候只要配方本身已经锁定到唯一一条，直接按配方需求把它还缺的物品
-// 挨个塞进对应槽位组里还空着的位置就行(槽位内物品互不区分先后，塞的顺序不重
-// 要)——这是设备从没选任何东西开始、但整台设备本来就只有一种配方(比如气体
-// 反应炉只有一条配方)时，槽位能一开就自动摆满的关键，光靠 autoFillSingletons
-// 覆盖不到这种"槽位数刚好等于配方需求数、但候选并集大于一"的情况。
-function autoFillFromSingleRecipe(facilityId, slotValues) {
-  const recipe = findSingleViableRecipe(facilityId, slotValues);
-  if (!recipe) return false;
-  let changed = false;
-  for (const group of SLOT_GROUPS) {
-    const arr = slotValues[group];
-    if (!arr) continue;
-    const isInput = INPUT_GROUPS.includes(group);
-    const portType = GROUP_PORT_TYPE[group];
-    const already = new Set(arr.filter(Boolean));
-    const need = (isInput ? recipe.inputs : recipe.outputs)
-      .filter((io) => itemPortType(io.itemId) === portType && !already.has(io.itemId))
-      .map((io) => io.itemId);
-    let needIdx = 0;
-    for (let i = 0; i < arr.length && needIdx < need.length; i++) {
-      if (arr[i]) continue;
-      arr[i] = need[needIdx++];
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-// 每次槽位变化后收敛一遍：清掉不再合法的旧选择、按两种方式自动填上没有悬念
-// 的槽位，三者交替可能互相触发(清掉一个选择可能让另一个槽位从"多个候选"变成
-// "唯一候选"，反之自动填上一个也可能让原本合法的另一个选择变得不合法)，所以
-// 要循环到一整轮都没有变化为止。轮数上限只是防御性的安全阀，槽位数量级(个
-// 位数)决定了正常情况几轮就会收敛，不会真的撞到这个上限。
+// 每次槽位变化后清一遍不再合法的旧选择——清掉一个可能连带让另一个也不再合法
+// (比如清掉 A 之后，本来靠 A 撑住的配方不再可行，B 也该跟着清)，所以要循环到
+// 一整轮都没有变化为止。轮数上限只是防御性的安全阀，槽位数量级(个位数)决定
+// 了正常情况几轮就会收敛，不会真的撞到这个上限。
+//
+// 用户明确要求过不要"收紧到唯一解自动填入"(试过一版，手感奇怪，已去掉)——
+// 这里只做"清理不再合法的选择"，不主动帮用户填任何东西，空槽位再怎么收紧
+// 也只是收紧抽屉里能点的范围，不会自己冒出一个值。
 function normalizeSlotValues(facilityId, slotValues) {
   if (!slotValues || slotValues.sharedPool) return;
   let guard = 0;
-  let changed = true;
-  while (changed && guard++ < 50) {
-    const pruned = pruneInvalidSelections(facilityId, slotValues);
-    const filledWhole = autoFillFromSingleRecipe(facilityId, slotValues);
-    const filledSingle = autoFillSingletons(facilityId, slotValues);
-    changed = pruned || filledWhole || filledSingle;
+  while (pruneInvalidSelections(facilityId, slotValues) && guard++ < 50) {
+    // 循环体是空的：pruneInvalidSelections 本身就是"跑一轮、返回有没有变化"，
+    // 复用 while 条件判断即可，不需要额外逻辑。
   }
 }
 
 // 写入一个槽位值(itemId 传 null 即清空该槽)。修改前照例先 pushHistory()；写完
-// 这一下之后跑一遍 normalizeSlotValues 把连带影响一次性收敛掉，一次用户操作
-// 对应一次 Ctrl+Z，不会把级联的自动清空/自动填充拆成好几步历史。纯粹是设备
-// 实例上的元数据，不影响传送带/管道路径，不需要 recomputeAllFlows()。
+// 这一下之后跑一遍 normalizeSlotValues 把连带的失效清理一次性收敛掉，一次
+// 用户操作对应一次 Ctrl+Z，不会把级联清理拆成好几步历史。纯粹是设备实例上的
+// 元数据，不影响传送带/管道路径，不需要 recomputeAllFlows()。
 export function setSlotValue(dev, group, index, itemId) {
   pushHistory();
   if (group === 'port') {
@@ -255,9 +208,7 @@ export function setSlotValue(dev, group, index, itemId) {
 }
 
 // 面板里的"清空全部"：一次 pushHistory()，把这个设备所有槽位/端口物品清空，
-// 用于误触后一键复原，不用一个个槽位点掉。'recipe' 模式清完之后同样跑一遍
-// normalizeSlotValues——如果这台设备本来就只有一种配方，清空会立刻自动填回
-// 那个唯一解，这是符合预期的(没有第二种合法状态可以停留)，不是 bug。
+// 用于误触后一键复原，不用一个个槽位点掉。
 export function clearAllSlots(dev) {
   pushHistory();
   if (dev.portItems) {
@@ -268,7 +219,6 @@ export function clearAllSlots(dev) {
       dev.slotValues.sharedPool.fill(null);
     } else {
       for (const g of SLOT_GROUPS) if (dev.slotValues[g]) dev.slotValues[g].fill(null);
-      normalizeSlotValues(dev.facilityId, dev.slotValues);
     }
   }
 }

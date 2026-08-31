@@ -29,7 +29,7 @@ import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 import {
   getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeSlotCandidates,
-  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS
+  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS, getPortSlotDescriptors
 } from './recipeSlots.js';
 import { ITEMS, ITEM_BY_ID } from './data/items.js';
 
@@ -2160,15 +2160,16 @@ function renderRecipePanel() {
   if (kind === 'port') {
     // 'port' 模式目前没有哪个设备会同时有输入口和输出口(核心那种"进出都有"
     // 的设备已经不走这条槽位面板了，见 recipeSlots.js 的 PORT_ITEM_FACILITY_IDS
-    // 注释)，单列平铺即可，不需要两栏+箭头。
-    const els = (dev.ports || []).map((port) => {
-      const isFluid = port.type.startsWith('fluid');
-      const itemId = dev.portItems[port.id];
+    // 注释)，单列平铺即可，不需要两栏+箭头。槽位描述符走 getPortSlotDescriptors
+    // 而不是直接遍历 dev.ports——大多数设备一个端口对应一个槽位，但热能池
+    // 只有一个虚拟槽位(2 个传送带口同时只烧一种东西，槽位数不跟端口数走)。
+    const els = getPortSlotDescriptors(dev.facilityId).map((d) => {
+      const itemId = dev.portItems[d.key];
       return buildSlotButton(
-        isFluid ? 'circle' : 'square',
+        d.shape,
         itemId,
-        () => { setSlotValue(dev, 'port', port.id, null); renderRecipePanel(); },
-        () => showItemPicker(dev.id, 'port', port.id)
+        () => { setSlotValue(dev, 'port', d.key, null); renderRecipePanel(); },
+        () => showItemPicker(dev.id, 'port', d.key)
       );
     });
     recipePanelBodyEl.appendChild(buildSlotColumn(els));
@@ -2235,8 +2236,8 @@ function currentPickerPortType() {
   if (!t) return null;
   if (t.group === 'port') {
     const dev = state.devices.find((d) => d.id === t.deviceId);
-    const port = dev && (dev.ports || []).find((p) => p.id === t.index);
-    return port && port.type.startsWith('fluid') ? 'fluid' : 'solid';
+    const descriptor = dev && getPortSlotDescriptors(dev.facilityId).find((d) => d.key === t.index);
+    return descriptor && descriptor.shape === 'circle' ? 'fluid' : 'solid';
   }
   return t.group.endsWith('Fluid') ? 'fluid' : 'solid';
 }
