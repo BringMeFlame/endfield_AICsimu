@@ -2,7 +2,9 @@
 import { GRID_SIZE, HINT_NORMAL, HINT_BELT, HINT_PIPE, HINT_BOX_SELECTED } from './constants.js';
 import {
   state, canvas, toolbar, toolbarTabs, toolbarIcons, hintEl, mapSelectEl,
-  mapConfirmOverlayEl, mapConfirmMessageEl, mapConfirmCancelEl, mapConfirmOkEl
+  mapConfirmOverlayEl, mapConfirmMessageEl, mapConfirmCancelEl, mapConfirmOkEl,
+  recipePanelOverlayEl, recipePanelTitleEl, recipePanelBodyEl, recipePanelClearAllEl, recipePanelCloseEl,
+  itemPickerOverlayEl, itemPickerDrawerEl, itemPickerSearchEl, itemPickerCancelEl, itemPickerTabsEl, itemPickerGridEl
 } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
@@ -25,6 +27,11 @@ import {
 } from './pathfinding.js';
 import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
+import {
+  getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeInputCandidates,
+  computeOutputCandidates, getRelevantItemIds, setSlotValue, clearAllSlots, PORT_ITEM_FACILITY_IDS
+} from './recipeSlots.js';
+import { ITEMS, ITEM_BY_ID } from './data/items.js';
 
 // 框选批量选中不是一个需要切换进入的独立模式，是否显示它的提示纯粹看当前
 // 是否有多选内容(三个 boxSelected*Ids 集合任一非空)，因此单独抽出这个判断,
@@ -1174,7 +1181,18 @@ function bindCanvasMouseEvents() {
       draw();
       return;
     }
-    if (!state.freeBeltMode && !state.freePipeMode) return;
+    if (!state.freeBeltMode && !state.freePipeMode) {
+      // 普通模式下右键一个设备：有槽位面板('recipe'/'port'两种之一)就打开，
+      // 命中别的东西或空白处一律不拦截，走浏览器默认右键菜单(和现有行为一致，
+      // 这条项目里之前从来没处理过普通右键，是纯增量)。
+      const world = screenToWorld(e.clientX, e.clientY);
+      const dev = hitTestDevice(world.x, world.y);
+      if (dev && getSlotPanelKind(dev)) {
+        e.preventDefault();
+        showRecipePanel(dev.id);
+      }
+      return;
+    }
     e.preventDefault();
     if (state.freeBeltMode) {
       state.freeBeltMode = false;
@@ -1696,6 +1714,17 @@ function bindKeyboardEvents() {
       if (e.key === 'Escape') { e.preventDefault(); hideMapConfirmModal(); }
       return;
     }
+    // 物品选择抽屉/槽位面板打开时同上，同一个"浮层开着时只认 Escape"的
+    // 先例：Escape 先关抽屉(如果开着)，再关面板，一次按键只收一层，避免手滑
+    // 直接把面板和抽屉一起关掉。
+    if (state.itemPickerTarget) {
+      if (e.key === 'Escape') { e.preventDefault(); hideItemPicker(); }
+      return;
+    }
+    if (state.recipePanelDeviceId) {
+      if (e.key === 'Escape') { e.preventDefault(); hideRecipePanel(); }
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
       e.preventDefault();
       undo();
@@ -1778,6 +1807,8 @@ function bindKeyboardEvents() {
         state.hoveredPort = null;
         state.dragTargetPort = null;
         resetBoxSelectTransientState();
+        hideItemPicker();
+        hideRecipePanel();
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1817,6 +1848,8 @@ function bindKeyboardEvents() {
         state.hoveredPort = null;
         state.dragTargetPort = null;
         resetBoxSelectTransientState();
+        hideItemPicker();
+        hideRecipePanel();
         canvas.style.cursor = 'crosshair';
       } else {
         canvas.style.cursor = 'default';
@@ -1946,8 +1979,11 @@ function placeCoreDevice(mapDef) {
     powerCost: facility.powerCost,
     powerRange: facility.powerRange,
     isLowProfile: facility.isLowProfile,
-    locked: true // 核心：禁止删除/复制(见 keydown 的 Delete 分支、buildClipboardFromSelection、
+    locked: true, // 核心：禁止删除/复制(见 keydown 的 Delete 分支、buildClipboardFromSelection、
                  // performBoxSelectDelete)，但可以正常移动/旋转/接线，不受这个标记影响。
+    // 协议核心/次级核心在 PORT_ITEM_FACILITY_IDS 里，走"自由选物品"槽位面板
+    // (端口即槽位)，和工具栏拖拽生成新设备那条路径共用同一个 buildInitialSlotState。
+    ...buildInitialSlotState(facility.id)
   };
   state.devices.push(core);
   state.coreDeviceId = core.id;
@@ -2040,6 +2076,302 @@ function bindMapConfirmModalEvents() {
 export function bootstrapDefaultMap() {
   performMapSwitch(MAP_CATALOG[0]);
   mapSelectEl.value = MAP_CATALOG[0].id;
+}
+
+// ---- 右键槽位面板 + 物品选择抽屉 ----
+// 右键一个有槽位数据的设备(recipeSlots.js 的 getSlotPanelKind 判定)弹出居中
+// 浮层(仿 map-confirm-overlay 那套 display 切换)，列出全部槽位——方形=固体、
+// 圆形=流体，和游戏保持一致。点一个槽位从屏幕右侧滑出物品选择抽屉，选中后
+// 立即写回并关闭抽屉，'recipe' 模式下顺带把其它槽位的候选范围重算一遍(见
+// recipeSlots.js 的收紧算法)。两层浮层各自独立开合：关抽屉不代表关面板，关
+// 面板会连带关掉可能还开着的抽屉；抽屉本身只有点了具体某个物品才会写入槽位，
+// 点遮罩/取消按钮/Escape 都是纯关闭、不改任何数据，对应"取消该次选择"的诉求；
+// 面板里已经选好的槽位有单独的"×"清空按钮，外加一个"清空全部"，对应"防止
+// 误触"的诉求，两种粒度都覆盖到。
+
+function findRecipePanelDevice() {
+  return state.devices.find((d) => d.id === state.recipePanelDeviceId) || null;
+}
+
+function showRecipePanel(deviceId) {
+  state.recipePanelDeviceId = deviceId;
+  hideItemPicker(); // 换了设备，之前开着的抽屉(如果有)已经对不上号
+  renderRecipePanel();
+  recipePanelOverlayEl.style.display = 'flex';
+}
+
+function hideRecipePanel() {
+  state.recipePanelDeviceId = null;
+  hideItemPicker();
+  recipePanelOverlayEl.style.display = 'none';
+}
+
+// 槽位组的形状(方/圆，和游戏一致)+ 面板里的分组标题，四个 recipe 模式槽位组
+// 共用；'port' 模式的形状直接看端口本身的 belt/fluid 类型，不查这张表。
+const SLOT_GROUP_META = {
+  inputSolid: { shape: 'square', title: '输入 · 固体' },
+  inputFluid: { shape: 'circle', title: '输入 · 流体' },
+  outputSolid: { shape: 'square', title: '产出 · 固体' },
+  outputFluid: { shape: 'circle', title: '产出 · 流体' }
+};
+
+function buildSlotButton(shape, itemId, onClear, onOpen) {
+  const btn = document.createElement('div');
+  btn.className = `recipe-slot recipe-slot-${shape}` + (itemId ? ' filled' : '');
+  const label = document.createElement('span');
+  label.className = 'recipe-slot-label';
+  if (itemId) {
+    const item = ITEM_BY_ID.get(itemId);
+    label.textContent = item ? item.name : itemId;
+    btn.title = item ? item.name : itemId;
+  } else {
+    label.textContent = '+';
+    btn.title = '点击选择物品';
+  }
+  btn.appendChild(label);
+  if (itemId) {
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'recipe-slot-clear';
+    clearBtn.textContent = '×';
+    clearBtn.title = '清空该槽位';
+    clearBtn.addEventListener('click', (e) => { e.stopPropagation(); onClear(); });
+    btn.appendChild(clearBtn);
+  }
+  btn.addEventListener('click', onOpen);
+  return btn;
+}
+
+function appendSlotGroup(container, title, shape, els) {
+  const box = document.createElement('div');
+  box.className = 'recipe-slot-group';
+  const heading = document.createElement('div');
+  heading.className = 'recipe-slot-group-title';
+  heading.textContent = title;
+  box.appendChild(heading);
+  const row = document.createElement('div');
+  row.className = 'recipe-slot-row';
+  for (const el of els) row.appendChild(el);
+  box.appendChild(row);
+  container.appendChild(box);
+}
+
+function renderRecipePanel() {
+  const dev = findRecipePanelDevice();
+  recipePanelBodyEl.innerHTML = '';
+  if (!dev) return;
+  recipePanelTitleEl.textContent = dev.label || '';
+  const kind = getSlotPanelKind(dev);
+
+  if (kind === 'port') {
+    const solidEls = [];
+    const fluidEls = [];
+    for (const port of dev.ports || []) {
+      const isFluid = port.type.startsWith('fluid');
+      const itemId = dev.portItems[port.id];
+      const el = buildSlotButton(
+        isFluid ? 'circle' : 'square',
+        itemId,
+        () => { setSlotValue(dev, 'port', port.id, null); renderRecipePanel(); },
+        () => showItemPicker(dev.id, 'port', port.id)
+      );
+      (isFluid ? fluidEls : solidEls).push(el);
+    }
+    if (solidEls.length) appendSlotGroup(recipePanelBodyEl, '固体端口', 'square', solidEls);
+    if (fluidEls.length) appendSlotGroup(recipePanelBodyEl, '流体端口', 'circle', fluidEls);
+    return;
+  }
+
+  const spec = getFacilitySlotSpec(dev.facilityId);
+  if (!spec) return; // getSlotPanelKind 已经保证不会走到这里
+  if (spec.sharedPool) {
+    const note = document.createElement('div');
+    note.className = 'recipe-panel-note';
+    note.textContent =
+      `该设备是共享槽位设计(共 ${spec.totalSlots} 个槽位，原料和产物共用同一个槽位池)，` +
+      '和其它设备"固定输入/输出槽位数"的模型不一样，槽位面板暂时还没接入这种设计，先留到后续单独实现。';
+    recipePanelBodyEl.appendChild(note);
+    return;
+  }
+
+  for (const group of ['inputSolid', 'inputFluid', 'outputSolid', 'outputFluid']) {
+    const arr = dev.slotValues[group];
+    if (!arr) continue;
+    const meta = SLOT_GROUP_META[group];
+    const els = arr.map((itemId, index) => buildSlotButton(
+      meta.shape,
+      itemId,
+      () => { setSlotValue(dev, group, index, null); renderRecipePanel(); },
+      () => showItemPicker(dev.id, group, index)
+    ));
+    appendSlotGroup(recipePanelBodyEl, meta.title, meta.shape, els);
+  }
+}
+
+function bindRecipePanelEvents() {
+  recipePanelCloseEl.addEventListener('click', () => hideRecipePanel());
+  recipePanelOverlayEl.addEventListener('click', (e) => {
+    if (e.target === recipePanelOverlayEl) hideRecipePanel(); // 只有点遮罩本身(不是里面的框)才关
+  });
+  recipePanelClearAllEl.addEventListener('click', () => {
+    const dev = findRecipePanelDevice();
+    if (!dev) return;
+    clearAllSlots(dev);
+    renderRecipePanel();
+  });
+}
+
+// ---- 物品选择抽屉 ----
+
+function currentPickerPortType() {
+  const t = state.itemPickerTarget;
+  if (!t) return null;
+  if (t.group === 'port') {
+    const dev = state.devices.find((d) => d.id === t.deviceId);
+    const port = dev && (dev.ports || []).find((p) => p.id === t.index);
+    return port && port.type.startsWith('fluid') ? 'fluid' : 'solid';
+  }
+  return t.group.endsWith('Fluid') ? 'fluid' : 'solid';
+}
+
+// 抽屉里点击可选中的候选范围：'port' 模式没有配方可收紧，全部同 portType 物品
+// 都能选；'recipe' 模式下输入槽/输出槽分别走 recipeSlots.js 的两套收紧算法。
+function currentPickerCandidateIds() {
+  const t = state.itemPickerTarget;
+  if (!t) return new Set();
+  const dev = state.devices.find((d) => d.id === t.deviceId);
+  if (!dev) return new Set();
+  if (t.group === 'port') {
+    const portType = currentPickerPortType();
+    return new Set(ITEMS.filter((i) => i.portType === portType).map((i) => i.id));
+  }
+  if (t.group === 'inputSolid' || t.group === 'inputFluid') {
+    return computeInputCandidates(dev.facilityId, dev.slotValues, t.group);
+  }
+  return computeOutputCandidates(dev.facilityId, dev.slotValues, t.group);
+}
+
+// 抽屉里"浏览"用的物品池，和上面能不能点选(candidateIds)是两回事：'全部物品'
+// 标签页/'port'模式(没有相关配方概念)一律是同 portType 的全部 199 个物品里
+// 挑出来的那部分；'本设备相关'标签页收窄成这台设备配方里出现过的物品，方便
+// 不用一上来就面对全部物品，具体见 recipeSlots.js 的 getRelevantItemIds。
+function currentPickerBrowsePool() {
+  const t = state.itemPickerTarget;
+  const portType = currentPickerPortType();
+  if (t.group === 'port' || state.itemPickerTab === 'all') {
+    return new Set(ITEMS.filter((i) => i.portType === portType).map((i) => i.id));
+  }
+  const dev = state.devices.find((d) => d.id === t.deviceId);
+  return getRelevantItemIds(dev.facilityId, t.group);
+}
+
+function showItemPicker(deviceId, group, index) {
+  state.itemPickerTarget = { deviceId, group, index };
+  state.itemPickerTab = 'relevant';
+  state.itemPickerSearch = '';
+  itemPickerSearchEl.value = '';
+  renderItemPickerTabs();
+  renderItemPickerGrid();
+  itemPickerOverlayEl.style.display = 'block';
+  itemPickerDrawerEl.classList.add('open');
+}
+
+function hideItemPicker() {
+  state.itemPickerTarget = null;
+  itemPickerOverlayEl.style.display = 'none';
+  itemPickerDrawerEl.classList.remove('open');
+}
+
+function renderItemPickerTabs() {
+  const t = state.itemPickerTarget;
+  itemPickerTabsEl.innerHTML = '';
+  if (!t || t.group === 'port') {
+    // 'port' 模式没有配方可言，"本设备相关"这个概念不成立，不显示标签页，
+    // 直接按全部同类型物品浏览(currentPickerBrowsePool 已经处理了这个分支)。
+    itemPickerTabsEl.style.display = 'none';
+    return;
+  }
+  itemPickerTabsEl.style.display = '';
+  for (const [key, label] of [['relevant', '本设备相关'], ['all', '全部物品']]) {
+    const tab = document.createElement('div');
+    tab.className = 'item-picker-tab' + (state.itemPickerTab === key ? ' active' : '');
+    tab.textContent = label;
+    tab.dataset.tab = key;
+    itemPickerTabsEl.appendChild(tab);
+  }
+}
+
+function iconFallbackEl(name) {
+  const span = document.createElement('span');
+  span.className = 'item-picker-icon-fallback';
+  span.textContent = (name || '').slice(0, 2); // 图标还没抓到时的兜底：中文名前两个字
+  return span;
+}
+
+function renderItemPickerGrid() {
+  const t = state.itemPickerTarget;
+  itemPickerGridEl.innerHTML = '';
+  if (!t) return;
+  const dev = state.devices.find((d) => d.id === t.deviceId);
+  if (!dev) return;
+  const portType = currentPickerPortType();
+  const candidates = currentPickerCandidateIds();
+  const pool = currentPickerBrowsePool();
+  const search = state.itemPickerSearch.trim();
+  const list = ITEMS.filter((i) => pool.has(i.id) &&
+    (!search || i.name.includes(search) || i.id.includes(search)));
+
+  if (list.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'item-picker-empty';
+    empty.textContent = search ? '没有匹配的物品'
+      : (t.group === 'outputSolid' || t.group === 'outputFluid'
+        ? '还没有配方被满足，先去填输入槽位'
+        : '暂无可选物品');
+    itemPickerGridEl.appendChild(empty);
+    return;
+  }
+
+  for (const item of list) {
+    const enabled = candidates.has(item.id);
+    const cell = document.createElement('div');
+    cell.className = `item-picker-cell item-picker-cell-${portType}` + (enabled ? '' : ' disabled');
+    cell.title = enabled ? item.name : `${item.name}（当前选择下不可用）`;
+    const icon = document.createElement('img');
+    icon.className = 'item-picker-icon';
+    icon.alt = item.name;
+    icon.onerror = () => icon.replaceWith(iconFallbackEl(item.name));
+    icon.src = `/icons/items/${item.id}.webp`;
+    cell.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'item-picker-cell-label';
+    label.textContent = item.name;
+    cell.appendChild(label);
+    if (enabled) {
+      cell.addEventListener('click', () => {
+        setSlotValue(dev, t.group, t.index, item.id);
+        hideItemPicker();
+        renderRecipePanel();
+      });
+    }
+    itemPickerGridEl.appendChild(cell);
+  }
+}
+
+function bindItemPickerEvents() {
+  itemPickerCancelEl.addEventListener('click', () => hideItemPicker());
+  itemPickerOverlayEl.addEventListener('click', () => hideItemPicker());
+  itemPickerSearchEl.addEventListener('input', (e) => {
+    state.itemPickerSearch = e.target.value;
+    renderItemPickerGrid();
+  });
+  itemPickerTabsEl.addEventListener('click', (e) => {
+    const tab = e.target.closest('.item-picker-tab');
+    if (!tab) return;
+    state.itemPickerTab = tab.dataset.tab;
+    renderItemPickerTabs();
+    renderItemPickerGrid();
+  });
 }
 
 // ---- 工具栏拖拽生成新设备 ----
@@ -2181,7 +2513,14 @@ function bindToolbarSpawnEvents() {
           ports: template.ports,
           powerCost: template.powerCost,
           powerRange: template.powerRange,
-          isLowProfile: template.isLowProfile
+          isLowProfile: template.isLowProfile,
+          // 配方槽位面板('recipe')或自由选物品面板('port')用的槽位数据，见
+          // recipeSlots.js 的 buildInitialSlotState；两种面板都用不上的设备
+          // (没有 slots 字段、也不在 PORT_ITEM_FACILITY_IDS 里)得到 {}，右键
+          // 不会命中任何面板分支。落地后随 dev 一起进 cloneCanvasState() 的
+          // JSON 深拷贝，Ctrl+Z/框选批量拖拽/Ctrl+V 复制都天然带上，不用
+          // 额外处理。
+          ...buildInitialSlotState(template.key)
         } : {}),
         // 汇流器/分流器(含管道版)专属：mainOutEdge/mainInEdge 决定哪条边固定是
         // 出口/入口，其余边留给用户在自由传送带/管道模式里逐条连接(见
@@ -2208,4 +2547,6 @@ export function initInteractions() {
   bindToolbarSpawnEvents();
   bindMapSelectorEvents();
   bindMapConfirmModalEvents();
+  bindRecipePanelEvents();
+  bindItemPickerEvents();
 }

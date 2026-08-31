@@ -11,6 +11,17 @@ export const mapConfirmOverlayEl = document.getElementById('map-confirm-overlay'
 export const mapConfirmMessageEl = document.getElementById('map-confirm-message');
 export const mapConfirmCancelEl = document.getElementById('map-confirm-cancel');
 export const mapConfirmOkEl = document.getElementById('map-confirm-ok');
+export const recipePanelOverlayEl = document.getElementById('recipe-panel-overlay');
+export const recipePanelTitleEl = document.getElementById('recipe-panel-title');
+export const recipePanelBodyEl = document.getElementById('recipe-panel-body');
+export const recipePanelClearAllEl = document.getElementById('recipe-panel-clear-all');
+export const recipePanelCloseEl = document.getElementById('recipe-panel-close');
+export const itemPickerOverlayEl = document.getElementById('item-picker-overlay');
+export const itemPickerDrawerEl = document.getElementById('item-picker-drawer');
+export const itemPickerSearchEl = document.getElementById('item-picker-search');
+export const itemPickerCancelEl = document.getElementById('item-picker-cancel');
+export const itemPickerTabsEl = document.getElementById('item-picker-tabs');
+export const itemPickerGridEl = document.getElementById('item-picker-grid');
 
 // ---- 全局可变状态 ----
 // 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的
@@ -236,5 +247,19 @@ export const state = {
   // showMapConfirmModal/hideMapConfirmModal)：待确认时记录目标地图，供"确定
   // 切换"按钮读取。和 pastePending 同类——"进行到一半、等待用户点按钮决定"的
   // 瞬时交互态，undo() 里一并重置。
-  mapConfirmPending: null // { mapDef } | null
+  mapConfirmPending: null, // { mapDef } | null
+
+  // ---- 右键槽位面板(recipeSlots.js + interactions.js 的 showRecipePanel/
+  // hideRecipePanel)：当前打开面板的设备实例 id，null 表示未打开。面板本身的
+  // 内容(槽位数/候选物品)不缓存在 state 里，每次都从 dev.slotValues/portItems
+  // + recipeSlots.js 现算，和 devices.js 的碰撞检测同一个"现算不缓存"先例。
+  recipePanelDeviceId: null,
+
+  // ---- 从右侧滑出的物品选择抽屉：正在为哪个槽位选物品，null 表示未打开。
+  // group 是 'inputSolid'/'inputFluid'/'outputSolid'/'outputFluid'/'port'，
+  // index 是槽位数组下标(数字)或 portId(字符串，port 模式下)。和 recipePanelDeviceId
+  // 是两层独立的浮层状态(面板在下、抽屉在上)，关抽屉不等于关面板。
+  itemPickerTarget: null, // { deviceId, group, index } | null
+  itemPickerTab: 'relevant', // 'relevant'(本设备相关) | 'all'(全部物品)，纯 UI 状态
+  itemPickerSearch: '' // 抽屉搜索框文本，纯 UI 状态
 };

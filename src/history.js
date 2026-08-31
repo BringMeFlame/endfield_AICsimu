@@ -74,6 +74,8 @@ export function undo() {
   state.mapConfirmPending = null;
   state.hoveredPort = null;
   state.dragTargetPort = null;
+  state.recipePanelDeviceId = null;
+  state.itemPickerTarget = null;
 
   draw();
 }

@@ -142,6 +142,320 @@ canvas {
   color: #fff;
 }
 
+/* 右键槽位面板：居中浮层，视觉沿用 #map-confirm-overlay/#map-confirm-box 那套
+   "白底黑边 + Noto Sans SC" 语言，只是尺寸更大(要容纳好几组槽位)。inset:0 铺满
+   视口天然拦住画布事件，不需要逐处给 canvas 事件处理加"面板打开时跳过"判断。 */
+#recipe-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#recipe-panel-box {
+  background: #ffffff;
+  border: 3px solid #111;
+  border-radius: 6px;
+  padding: 18px 22px 16px;
+  width: 420px;
+  max-width: calc(100vw - 220px); /* 留出左侧工具栏宽度，避免面板压到它上面 */
+  max-height: calc(100vh - 80px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+}
+#recipe-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+#recipe-panel-title {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-weight: 900;
+  font-size: 16px;
+  color: #111;
+}
+#recipe-panel-close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #666;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+}
+#recipe-panel-close:hover {
+  color: #111;
+}
+#recipe-panel-body {
+  overflow-y: auto;
+  flex: 1;
+}
+.recipe-slot-group {
+  margin-bottom: 14px;
+}
+.recipe-slot-group:last-child {
+  margin-bottom: 0;
+}
+.recipe-slot-group-title {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 11px;
+  font-weight: 900;
+  color: #888;
+  margin-bottom: 6px;
+}
+.recipe-slot-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+/* 槽位形状：方形=固体、圆形=流体，和游戏保持一致(用户明确要求的一条)。空
+   槽位显示一个 "+"，已填槽位显示物品名(过长会被截断，完整名称走 title 悬浮
+   提示)，右上角叠一个小 "×" 单独清空这一个槽位，防止"清空全部"这种大动作
+   之外还需要更细粒度的误触恢复手段。 */
+.recipe-slot {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  background: #ffffff;
+  border: 2px solid #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-sizing: border-box;
+  padding: 4px;
+}
+.recipe-slot-square {
+  border-radius: 6px;
+}
+.recipe-slot-circle {
+  border-radius: 50%;
+}
+.recipe-slot.filled {
+  background: #fafafa;
+  border-color: #111;
+}
+.recipe-slot:hover {
+  border-color: #388e3c;
+}
+.recipe-slot-label {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 11px;
+  font-weight: 900;
+  color: #111;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+.recipe-slot-clear {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ff1744;
+  color: #fff;
+  border: none;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.recipe-panel-note {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.6;
+}
+#recipe-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+#recipe-panel-clear-all {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-weight: 900;
+  font-size: 12px;
+  color: #111;
+  background: #ffffff;
+  border: 2px solid #111;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+#recipe-panel-clear-all:hover {
+  background: #ff1744;
+  border-color: #ff1744;
+  color: #fff;
+}
+
+/* 物品选择抽屉：从屏幕右侧滑出的大面板(用户明确要求)，#item-picker-overlay
+   是一层透明的点击遮罩(不像槽位面板那样要有半透明底色，抽屉本身已经足够
+   醒目)，点它(而不是抽屉本体)等效"取消该次选择"，纯关闭不改任何数据。 */
+#item-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  display: none;
+  z-index: 110;
+}
+#item-picker-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 380px;
+  height: 100vh;
+  background: #ffffff;
+  border-left: 3px solid #111;
+  box-shadow: -6px 0 20px rgba(0, 0, 0, 0.2);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.18s ease-out;
+  z-index: 111;
+}
+#item-picker-drawer.open {
+  transform: translateX(0);
+}
+#item-picker-header {
+  display: flex;
+  gap: 8px;
+  padding: 16px 16px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
+#item-picker-search {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  border: 2px solid #111;
+  border-radius: 4px;
+  padding: 6px 10px;
+  box-sizing: border-box;
+}
+#item-picker-cancel {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-weight: 900;
+  font-size: 12px;
+  color: #111;
+  background: #ffffff;
+  border: 2px solid #111;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* 标签页沿用左侧工具栏 .toolbar-tab 的下划线式导航语言，保持"这是导航不是
+   可点物品"的一贯视觉区分。 */
+#item-picker-tabs {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
+.item-picker-tab {
+  padding: 2px 2px 8px;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+  color: #999;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+}
+.item-picker-tab.active {
+  color: #111;
+  border-bottom-color: #111;
+}
+#item-picker-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 10px;
+}
+.item-picker-empty {
+  width: 100%;
+  text-align: center;
+  color: #999;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  padding: 24px 0;
+}
+/* 每个物品格子形状同样按 solid/fluid 区分方/圆，和左边槽位面板呼应，选中前
+   就能一眼看出这个格子填进去会落在哪种槽位里。灰掉(disabled)的格子代表在
+   当前已选状态下不可用，不是不存在——保留可见而不是直接隐藏，让"选项被
+   收紧"这件事看得见，而不是选项凭空消失。 */
+.item-picker-cell {
+  width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.item-picker-cell.disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+.item-picker-icon,
+.item-picker-icon-fallback {
+  width: 48px;
+  height: 48px;
+  background: #ffffff;
+  border: 2px solid #111;
+  box-sizing: border-box;
+  object-fit: contain;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 11px;
+  font-weight: 900;
+  color: #111;
+}
+.item-picker-cell-solid .item-picker-icon,
+.item-picker-cell-solid .item-picker-icon-fallback {
+  border-radius: 6px;
+}
+.item-picker-cell-fluid .item-picker-icon,
+.item-picker-cell-fluid .item-picker-icon-fallback {
+  border-radius: 50%;
+}
+.item-picker-cell:not(.disabled):hover .item-picker-icon,
+.item-picker-cell:not(.disabled):hover .item-picker-icon-fallback {
+  border-color: #388e3c;
+}
+.item-picker-cell-label {
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 11px;
+  color: #333;
+  text-align: center;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 #toolbar {
   position: fixed;
   top: 0;

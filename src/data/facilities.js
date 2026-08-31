@@ -27,6 +27,20 @@
 //   表示端口朝外的朝向——本项目 DIR_N/E/S/W（见 constants.js）是「到达这一格时
 //   的移动方向」，语义不同，不能直接划等号，后续真正接入 getDevicePorts() 时需要
 //   专门写一层映射，本次先原样保留源数据坐标系。
+// - slots：配方槽位面板用，只有用户已经核对过槽位数的 26 条记录才有这个字段，
+//   其余记录没有 slots 就代表"槽位数据还没核对"，槽位面板不对这些设备生效
+//   （interactions.js 右键判定 `dev.facilityId` 对应的记录有没有 slots）。
+//   槽位数是设备固有属性，和上面 ports 的端口数量是两回事，不能按端口 id 一一
+//   对应，具体数值来自 reference/items_recipes_template.xlsx「设备槽位与机器
+//   归属」sheet 用户手填的结果。两种形状：
+//   - 常规四槽位模型 `{ inputSolid?, inputFluid?, outputSolid?, outputFluid? }`，
+//     缺失的方向表示该设备没有这一类槽位（不是 0 个，是"不存在"，槽位面板据此
+//     决定要不要渲染这一组）。
+//   - 共享槽位模型 `{ sharedPool: true, totalSlots }`，目前只有「反应池」「扩容
+//     反应池」两条记录用这个：所有原料和产物共享同一个槽位池，不区分固定的
+//     输入/输出角色，和四槽位模型是完全不同的交互，`devices.js` 的
+//     `SHARED_POOL_FACILITY_IDS` 据此单独分支，槽位面板对这两个设备目前只显示
+//     "暂未支持"提示，不接入自动配方匹配。
 // 分类内设备顺序对齐官方基建列表顺序（同一设备的不同模式相邻排列，模式间顺序
 // 不额外规定），仅调整了 FACILITIES 里的排列顺序，不改动任何字段数值。
 export const FACILITIES = {
@@ -39,6 +53,7 @@ export const FACILITIES = {
       powerCost: -5,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -56,6 +71,7 @@ export const FACILITIES = {
       powerCost: -5,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputSolid: 1, outputFluid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -75,6 +91,7 @@ export const FACILITIES = {
       powerCost: -5,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -92,6 +109,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -109,6 +127,7 @@ export const FACILITIES = {
       powerCost: -10,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -127,6 +146,7 @@ export const FACILITIES = {
       powerCost: -10,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_2', type: 'item_output', grid: [0, 2], dir: 'down' },
         { id: 'belt_out_1_2', type: 'item_output', grid: [1, 2], dir: 'down' },
@@ -144,6 +164,7 @@ export const FACILITIES = {
       powerCost: -10,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'down' },
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
@@ -165,6 +186,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'down' },
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
@@ -186,6 +208,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'down' },
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
@@ -208,6 +231,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 1 },
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
       ],
@@ -222,6 +246,7 @@ export const FACILITIES = {
       powerCost: -10,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 2, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -245,6 +270,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 2, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -268,6 +294,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -292,6 +319,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 2, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -315,6 +343,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 2, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -338,6 +367,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { sharedPool: true, totalSlots: 5 },
       ports: [
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
         { id: 'belt_out_3_4', type: 'item_output', grid: [3, 4], dir: 'down' },
@@ -357,6 +387,7 @@ export const FACILITIES = {
       powerCost: -100,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { sharedPool: true, totalSlots: 8 },
       ports: [
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
         { id: 'belt_out_2_4', type: 'item_output', grid: [2, 4], dir: 'down' },
@@ -380,6 +411,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputSolid: 1 },
       ports: [
         { id: 'belt_out_0_4', type: 'item_output', grid: [0, 4], dir: 'down' },
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
@@ -402,6 +434,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, inputFluid: 1, outputFluid: 1 },
       ports: [
         { id: 'pipe_in_0_2', type: 'fluid_input', grid: [0, 2], dir: 'left' },
         { id: 'belt_in_0_0', type: 'item_input', grid: [0, 0], dir: 'up' },
@@ -421,6 +454,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 1, outputFluid: 2 },
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
         { id: 'pipe_in_0_3', type: 'fluid_input', grid: [0, 3], dir: 'left' },
@@ -436,6 +470,7 @@ export const FACILITIES = {
       powerCost: -20,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputSolid: 1, outputFluid: 1 },
       ports: [
         { id: 'belt_out_0_3', type: 'item_output', grid: [0, 3], dir: 'down' },
         { id: 'belt_out_1_3', type: 'item_output', grid: [1, 3], dir: 'down' },
@@ -460,6 +495,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 1, outputFluid: 1 },
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
         { id: 'pipe_in_0_3', type: 'fluid_input', grid: [0, 3], dir: 'left' },
@@ -476,6 +512,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 1, outputFluid: 1 },
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
         { id: 'pipe_in_0_3', type: 'fluid_input', grid: [0, 3], dir: 'left' },
@@ -492,6 +529,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputSolid: 1, outputFluid: 1 },
       ports: [
         { id: 'pipe_in_2_0', type: 'fluid_input', grid: [2, 0], dir: 'up' },
         { id: 'belt_in_1_0', type: 'item_input', grid: [1, 0], dir: 'up' },
@@ -508,6 +546,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 1, outputSolid: 1 },
       ports: [
         { id: 'pipe_in_2_0', type: 'fluid_input', grid: [2, 0], dir: 'up' },
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
@@ -536,6 +575,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
+      slots: { inputFluid: 2, outputFluid: 1 },
       ports: [
         { id: 'pipe_in_0_1', type: 'fluid_input', grid: [0, 1], dir: 'left' },
         { id: 'pipe_in_0_3', type: 'fluid_input', grid: [0, 3], dir: 'left' },
