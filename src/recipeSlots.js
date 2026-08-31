@@ -250,30 +250,3 @@ export function clearAllSlots(dev) {
     }
   }
 }
-
-// ---- 物品上下游反查(槽位悬停提示用) ----
-// 全局"谁产出/谁消耗某个物品"索引，模块加载时只扫一遍 RECIPES 建好常驻内存
-// (纯派生自静态数据，不会变，不需要每次悬停重新算)，供 interactions.js 里
-// 槽位悬停 1 秒弹出的"物品上下游"提示使用。按 facilityId 去重——同一设备的
-// 多条配方都产出/消耗某物品时只算一次，提示不需要按配方逐条罗列。
-const ITEM_PRODUCERS = new Map(); // itemId -> Set<facilityId>
-const ITEM_CONSUMERS = new Map();
-for (const [facilityId, recipes] of Object.entries(RECIPES)) {
-  for (const r of recipes) {
-    for (const o of r.outputs) {
-      if (!ITEM_PRODUCERS.has(o.itemId)) ITEM_PRODUCERS.set(o.itemId, new Set());
-      ITEM_PRODUCERS.get(o.itemId).add(facilityId);
-    }
-    for (const i of r.inputs) {
-      if (!ITEM_CONSUMERS.has(i.itemId)) ITEM_CONSUMERS.set(i.itemId, new Set());
-      ITEM_CONSUMERS.get(i.itemId).add(facilityId);
-    }
-  }
-}
-
-export function getItemUpstreamDownstream(itemId) {
-  const toNames = (map) => [...(map.get(itemId) || [])]
-    .map((id) => FACILITY_BY_ID.get(id)?.name)
-    .filter(Boolean);
-  return { producers: toNames(ITEM_PRODUCERS), consumers: toNames(ITEM_CONSUMERS) };
-}
