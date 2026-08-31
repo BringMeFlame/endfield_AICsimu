@@ -32,7 +32,7 @@ export const BELT_EDGE_COLOR = 'rgba(120, 120, 120, 0.45)';
 export const HISTORY_LIMIT = 30;
 
 // ---- 快捷键提示：放在角落的小胶囊，只保留核心快捷键；切换模式时内容跟着换 ----
-export const HINT_NORMAL = '[左键拖拽] 放置建筑　|　[Ctrl+拖拽] 框选　|　[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[H] 供电范围　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
+export const HINT_NORMAL = '[左键拖拽] 放置建筑　|　[Ctrl+拖拽] 框选　|　[E] 传送带　|　[Q] 管道　|　[R] 旋转　|　[H] 覆盖范围　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_BELT = '[左键] 拉传送带　|　[右键/E] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 export const HINT_PIPE = '[左键] 拉管道　|　[右键/Q] 退出　|　[Alt+左键] 分流　|　[Ctrl+Z] 撤销';
 // 有框选批量选中项时替换掉 HINT_NORMAL(不是独立模式，纯粹是"当前选中了多个
@@ -99,3 +99,15 @@ export const WARNING_COLOR = '#ff1744';
 // 另一种"操作模式"而非纯信息展示。----
 export const POWER_RANGE_FILL = 'rgba(255, 193, 7, 0.12)';
 export const POWER_RANGE_STROKE = 'rgba(255, 160, 0, 0.55)';
+
+// ---- 惰气/酸气环境覆盖范围叠层(同样挂在 H 键全局开关下)：气体散布机接入惰气/
+// 酸气后，以自身为中心产生 13x13 的环境覆盖范围(devices.js 的
+// getGasEnvRangeRect)，用户明确要求惰气用蓝色边框、酸气用橙色边框区分——这是
+// 用户指定的颜色，不套用"新增独占工具模式需从未用过的色相里挑"那条规则(这里
+// 不是操作模式，是和供电范围同类的纯信息展示层)。特意选比 PIPE_ACCENT(管道
+// 模式强调色)更浅更透明的蓝、比 POWER_RANGE_STROKE(供电范围描边)更饱和更偏橙
+// 的橙，两两分得开，避免和已有蓝/橙语义混淆。----
+export const GAS_ENV_INERT_FILL = 'rgba(41, 121, 255, 0.10)';
+export const GAS_ENV_INERT_STROKE = 'rgba(41, 121, 255, 0.65)';
+export const GAS_ENV_ACID_FILL = 'rgba(255, 109, 0, 0.10)';
+export const GAS_ENV_ACID_STROKE = 'rgba(255, 109, 0, 0.7)';

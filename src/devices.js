@@ -4,7 +4,7 @@ import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
 import { isRectInMapBounds } from './mapBounds.js';
-import { CATALYST_ITEM_BY_FACILITY } from './recipeSlots.js';
+import { CATALYST_ITEM_BY_FACILITY, getRequiredGasEnvType } from './recipeSlots.js';
 import { ITEM_BY_ID } from './data/items.js';
 
 // 1x1 节点(汇流器/分流器)在画布上显示的短标签，靠这个 + 占地大小(而不是颜色)
@@ -231,6 +231,71 @@ export function computeUnpoweredIds() {
   return unpowered;
 }
 
+// ---- 惰气/酸气环境覆盖判定 ----
+// 气体散布机(dev_气体散布机)接入惰气/酸气(item_gas_inert/item_gas_acid，其余
+// 流体不产生环境)时，以自身占地中心为中心产生一个 13x13 的环境覆盖范围(游戏内
+// 固定数值，不随设备种类变化，因此不像 powerRange 那样放在 facilities.js 里
+// 按设备各自维护，直接写死在这个常量里)，范围类型跟着接入的气体走；接入速率
+// (至少 30/min)本项目明确不做流速判定，和催化剂/热能池槽位同一条"只看有没有
+// 接对、不核实具体数值"的原则。getGasEnvRangeRect 的中心/半径算法和
+// getPowerRangeRect 完全同构，只是供电范围只有一种类型、这里要按气体种类分
+// 惰气/酸气两组矩形。
+const GAS_DISPERSER_FACILITY_ID = 'dev_气体散布机';
+const GAS_ENV_RANGE_SIZE = 13;
+const GAS_ENV_ITEM_ID = { inert: 'item_gas_inert', acid: 'item_gas_acid' };
+
+export function getGasEnvRangeRect(dev) {
+  if (dev.facilityId !== GAS_DISPERSER_FACILITY_ID || !dev.portItems) return null;
+  const gasItemId = Object.values(dev.portItems)[0];
+  const type = gasItemId === GAS_ENV_ITEM_ID.inert ? 'inert'
+    : gasItemId === GAS_ENV_ITEM_ID.acid ? 'acid' : null;
+  if (!type) return null;
+  const pos = effectiveGridPos(dev);
+  const cx = pos.gridX + dev.w / 2;
+  const cy = pos.gridY + dev.h / 2;
+  const range = GAS_ENV_RANGE_SIZE;
+  return { type, gridX: cx - range / 2, gridY: cy - range / 2, w: range, h: range };
+}
+
+// 供 H 键全局叠层(render.js 的 drawGasEnvRanges)遍历用，和 computePowerRangeRects
+// 同一种写法。
+export function computeGasEnvRangeRects() {
+  return state.devices.map(d => getGasEnvRangeRect(d)).filter(r => r !== null);
+}
+
+// "完全覆盖"逐格检查(不要求单台气体散布机独立覆盖，允许多台同类型散布机的
+// 范围拼接覆盖到一台设备)，和供电覆盖"部分重叠即算通电"的判定标准不同——
+// 环境覆盖要求设备整个占地都落在同类型范围内，任何一格漏了都不算数。设备
+// 占地通常远小于 13x13 的环境范围，逐格检查的开销可以忽略。
+function isRectFullyCoveredByRanges(rect, rangeRects) {
+  for (let dx = 0; dx < rect.w; dx++) {
+    for (let dy = 0; dy < rect.h; dy++) {
+      const col = rect.gridX + dx, row = rect.gridY + dy;
+      const covered = rangeRects.some(r => col >= r.gridX && col < r.gridX + r.w && row >= r.gridY && row < r.gridY + r.h);
+      if (!covered) return false;
+    }
+  }
+  return true;
+}
+
+// 计算所有"当前配方选择需要惰气/酸气环境、但没有被完全覆盖"的设备，返回
+// deviceId -> 'inert'|'acid'。和 computeUnpoweredIds 同一套"现算、不缓存、不进
+// 撤销栈"的纯派生计算；getDeviceWarnings/findWarningIconAt 复用同一份结果，
+// 避免每台设备各自重新扫一遍全部气体散布机的范围。
+export function computeGasEnvWarnings() {
+  const rangeRects = computeGasEnvRangeRects();
+  const result = new Map();
+  for (const dev of state.devices) {
+    const required = getRequiredGasEnvType(dev);
+    if (!required) continue;
+    const pos = effectiveGridPos(dev);
+    const rect = { gridX: pos.gridX, gridY: pos.gridY, w: dev.w, h: dev.h };
+    const matching = rangeRects.filter(r => r.type === required);
+    if (!isRectFullyCoveredByRanges(rect, matching)) result.set(dev.id, required);
+  }
+  return result;
+}
+
 // 热能池的槽位("port"模式，见 recipeSlots.js，任何固体都能物理放进去)里
 // 真正能烧的只有这几样，其余固体虽然能放进槽位、但要提示烧不了。写在这里
 // 而不是 recipeSlots.js，是因为警告图标+悬停浮窗这套框架本来就在这个文件，
@@ -245,9 +310,11 @@ const HEAT_POOL_FUEL_ITEM_IDS = new Set([
 // 统一的小图标+悬停浮窗框架：往这个数组里按条件追加一行文字即可接入新的警告
 // 类型(如未来的"带宽超限"等)，不需要改动图标绘制(render.js)或悬停命中判定
 // (下面的 findWarningIconAt)的逻辑。
-export function getDeviceWarnings(dev, unpoweredIds) {
+export function getDeviceWarnings(dev, unpoweredIds, gasEnvWarnings) {
   const warnings = [];
   if (unpoweredIds.has(dev.id)) warnings.push('设备未通电');
+  const requiredGasEnv = gasEnvWarnings && gasEnvWarnings.get(dev.id);
+  if (requiredGasEnv) warnings.push(`需求${requiredGasEnv === 'inert' ? '惰气' : '酸气'}环境`);
   if (dev.facilityId === 'dev_热能池' && dev.portItems &&
       Object.values(dev.portItems).some((id) => id && !HEAT_POOL_FUEL_ITEM_IDS.has(id))) {
     warnings.push('槽位内有物品无法作为热能池燃料使用（仅源矿/原木/各类电池可用）');
@@ -280,10 +347,11 @@ function warningIconHitRadiusPx() {
 
 export function findWarningIconAt(clientX, clientY) {
   const unpoweredIds = computeUnpoweredIds();
+  const gasEnvWarnings = computeGasEnvWarnings();
   const radius = warningIconHitRadiusPx();
   for (let i = state.devices.length - 1; i >= 0; i--) {
     const dev = state.devices[i];
-    const warnings = getDeviceWarnings(dev, unpoweredIds);
+    const warnings = getDeviceWarnings(dev, unpoweredIds, gasEnvWarnings);
     if (!warnings.length) continue;
     const pos = getWarningIconWorldPos(dev);
     const s = worldToScreen(pos.x, pos.y);

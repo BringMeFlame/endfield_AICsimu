@@ -235,6 +235,40 @@ export function setSlotValue(dev, group, index, itemId) {
   normalizeSlotValues(dev.facilityId, dev.slotValues);
 }
 
+// ---- 惰气/酸气环境需求判定 ----
+// 部分配方(如提纯机_气体的"气态赫铜提纯"、气体反应炉的"气态灼铜生产")要求
+// 设备被气体散布机产生的对应气体环境完全覆盖才能运作(见 environmentCondition
+// 字段里的"需求惰气/酸气环境"文案)。范围本身由气体散布机产生、覆盖判定也在
+// devices.js(和供电覆盖判定同一分工，见该文件 getGasEnvRangeRect/
+// computeGasEnvWarnings)，这里只负责"这台设备当前槽位选择需不需要环境"。
+//
+// 判定规则：槽位全空(用户还没选任何原料/产物)时不判定，和催化剂/热能池同一条
+// "不对空状态报错"的原则。非空时，遍历"选中物品⊆配方"仍可行的配方(复用
+// isRecipeViable)，只要其中任意一条要求惰气或酸气环境就认为这台设备现在需要
+// 对应环境——不要求"所有可行配方都需要"，因为本项目槽位匹配只看物品种类不看
+// 数量，提纯机_气体的"气态赫铜提纯"就有两个只靠催化剂用量(1个/2个)区分是否
+// 需要环境、物品种类完全相同的配方版本，天生没法从槽位选择上分辨，因此选择
+// "宁可多提醒"而不是"必须所有可行配方一致"，避免真正需要环境时反而不提示。
+function detectGasEnvType(environmentCondition) {
+  if (!environmentCondition) return null;
+  if (environmentCondition.includes('惰气环境')) return 'inert';
+  if (environmentCondition.includes('酸气环境')) return 'acid';
+  return null;
+}
+
+export function getRequiredGasEnvType(dev) {
+  if (!dev || dev.kind !== 'facility' || !dev.slotValues) return null;
+  const selectedInputs = collectSelectedIds(dev.slotValues, INPUT_GROUPS);
+  const selectedOutputs = collectSelectedIds(dev.slotValues, OUTPUT_GROUPS);
+  if (selectedInputs.size === 0 && selectedOutputs.size === 0) return null;
+  for (const r of RECIPES[dev.facilityId] || []) {
+    if (!isRecipeViable(r, selectedInputs, selectedOutputs)) continue;
+    const envType = detectGasEnvType(r.environmentCondition);
+    if (envType) return envType;
+  }
+  return null;
+}
+
 // 面板里的"清空全部"：一次 pushHistory()，把这个设备所有槽位/端口物品清空，
 // 用于误触后一键复原，不用一个个槽位点掉。
 export function clearAllSlots(dev) {
