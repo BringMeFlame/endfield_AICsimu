@@ -214,6 +214,15 @@ canvas {
   justify-content: center;
   gap: 24px;
 }
+/* 固气/液气转化机额外叠加的催化剂圆槽位(见 recipeSlots.js 的
+   CATALYST_ITEM_BY_FACILITY)，排在 .recipe-panel-columns 前面、同样水平居中，
+   落在箭头正上方——这 4 台设备输入/输出各只有 1 个槽位，两栏等宽，箭头本来
+   就精确落在内容区水平中点，不需要额外的对齐计算。 */
+.recipe-panel-catalyst-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
 .recipe-slot-column {
   display: flex;
   flex-direction: column;
@@ -229,7 +238,8 @@ canvas {
 }
 /* 槽位形状：方形(直角，不带圆角)=固体、圆形=流体，和游戏保持一致(用户明确
    要求的一条)。空槽位显示一个 "+"，已填槽位显示物品名(过长会被截断，完整
-   名称走 title 悬浮提示)，右上角叠一个小 "×" 单独清空这一个槽位，防止
+   名称+上下游产出/消耗方走悬停 1 秒的 #item-lookup-popover，见 interactions.js
+   的 showItemLookupPopover)，右上角叠一个小 "×" 单独清空这一个槽位，防止
    "清空全部"这种大动作之外还需要更细粒度的误触恢复手段。 */
 .recipe-slot {
   position: relative;
@@ -469,6 +479,40 @@ canvas {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+/* 槽位悬停 1 秒弹出的"物品上下游"提示：纯展示、不吃鼠标事件(pointer-events:
+   none)，没有遮罩层——不需要"点外部关闭"，鼠标一移开槽位就直接隐藏(见
+   interactions.js 的 hideItemLookupPopover)。视觉延续"白底黑边 + Noto Sans SC"
+   语言，但明显比 #recipe-panel-box 更小更轻，一眼能看出这是提示而不是面板。 */
+#item-lookup-popover {
+  position: fixed;
+  z-index: 111;
+  display: none;
+  pointer-events: none;
+  background: #ffffff;
+  border: 2px solid #111;
+  border-radius: 6px;
+  padding: 10px 12px;
+  min-width: 160px;
+  max-width: 240px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+#item-lookup-title {
+  font-weight: 900;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.item-lookup-heading {
+  font-size: 11px;
+  color: #888;
+  margin: 6px 0 3px;
+}
+.item-lookup-list {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #333;
 }
 
 #toolbar {

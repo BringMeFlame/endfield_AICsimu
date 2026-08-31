@@ -4,6 +4,8 @@ import { state } from './state.js';
 import { worldToScreen } from './coords.js';
 import { FACILITIES } from './data/facilities.js';
 import { isRectInMapBounds } from './mapBounds.js';
+import { CATALYST_ITEM_BY_FACILITY } from './recipeSlots.js';
+import { ITEM_BY_ID } from './data/items.js';
 
 // 1x1 节点(汇流器/分流器)在画布上显示的短标签，靠这个 + 占地大小(而不是颜色)
 // 分辨节点种类；splitConnectionAtCell(切入已有连线生成节点)和下面 NODE_TEMPLATES
@@ -249,6 +251,15 @@ export function getDeviceWarnings(dev, unpoweredIds) {
   if (dev.facilityId === 'dev_热能池' && dev.portItems &&
       Object.values(dev.portItems).some((id) => id && !HEAT_POOL_FUEL_ITEM_IDS.has(id))) {
     warnings.push('槽位内有物品无法作为热能池燃料使用（仅源矿/原木/各类电池可用）');
+  }
+  // 固气/液气转化机的催化剂槽位(见 recipeSlots.js 的 CATALYST_ITEM_BY_FACILITY)：
+  // 两组设备各自只认一种流体，放错了、或者槽位空着都要能分清——只在已经填了
+  // 东西但填错时警告，空槽位不警告(新放置的设备不该一上来就报错)，和上面
+  // 热能池那条同一种写法。
+  const requiredCatalyst = CATALYST_ITEM_BY_FACILITY.get(dev.facilityId);
+  if (requiredCatalyst && dev.portItems && dev.portItems.catalyst &&
+      dev.portItems.catalyst !== requiredCatalyst) {
+    warnings.push(`请接入${ITEM_BY_ID.get(requiredCatalyst).name}`);
   }
   return warnings;
 }

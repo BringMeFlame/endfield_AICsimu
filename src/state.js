@@ -22,6 +22,10 @@ export const itemPickerSearchEl = document.getElementById('item-picker-search');
 export const itemPickerCancelEl = document.getElementById('item-picker-cancel');
 export const itemPickerTabsEl = document.getElementById('item-picker-tabs');
 export const itemPickerGridEl = document.getElementById('item-picker-grid');
+export const itemLookupPopoverEl = document.getElementById('item-lookup-popover');
+export const itemLookupTitleEl = document.getElementById('item-lookup-title');
+export const itemLookupProducersEl = document.getElementById('item-lookup-producers');
+export const itemLookupConsumersEl = document.getElementById('item-lookup-consumers');
 
 // ---- 全局可变状态 ----
 // 拆分成模块后，ES Module 的 import 绑定是只读的：别的模块不能对 import 进来的

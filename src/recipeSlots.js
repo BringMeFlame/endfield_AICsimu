@@ -38,6 +38,21 @@ export const PORT_ITEM_FACILITY_IDS = new Set([
 const SLOT_GROUPS = ['inputSolid', 'inputFluid', 'outputSolid', 'outputFluid'];
 export const INPUT_GROUPS = ['inputSolid', 'inputFluid'];
 export const OUTPUT_GROUPS = ['outputSolid', 'outputFluid'];
+
+// 固气转化机/液气转化机启动需要额外接入一路流体催化剂，且两组设备各自只认
+// 一种物品(固气转化机认息壤气、液气转化机认液化息壤，不是共用同一份白名单)，
+// 所以用 facilityId -> 必需 itemId 的 Map，而不是 Set。这个槽位叠加在正常的
+// 'recipe' 模式配方槽位之上(不是替换)，key 固定是 'catalyst'，不对应任何真实
+// port.id——和热能池的虚拟 'fuel' 槽位同一种写法(见 getPortSlotDescriptors)，
+// 区别只是热能池整台设备都是 'port' 模式，这里是 'recipe' 模式设备额外挂一个
+// 'port' 风格的虚拟槽位，两套存储(slotValues/portItems)在同一个设备实例上
+// 并存，互不干扰(setSlotValue/clearAllSlots 本来就分别独立判断这两个字段)。
+export const CATALYST_ITEM_BY_FACILITY = new Map([
+  ['dev_固气转化机_气体产出', 'item_gas_xiranite'],    // 息壤气
+  ['dev_固气转化机_固体产出', 'item_gas_xiranite'],
+  ['dev_液气转化机_气体产出', 'item_liquid_xiranite'],  // 液化息壤
+  ['dev_液气转化机_液体产出', 'item_liquid_xiranite'],
+]);
 const GROUP_PORT_TYPE = { inputSolid: 'solid', inputFluid: 'fluid', outputSolid: 'solid', outputFluid: 'fluid' };
 
 function itemPortType(itemId) {
@@ -67,6 +82,9 @@ export function getPortSlotDescriptors(facilityId) {
   if (facilityId === 'dev_热能池') {
     return [{ key: 'fuel', shape: 'square' }];
   }
+  if (CATALYST_ITEM_BY_FACILITY.has(facilityId)) {
+    return [{ key: 'catalyst', shape: 'circle' }];
+  }
   const f = FACILITY_BY_ID.get(facilityId);
   return ((f && f.ports) || []).map((p) => ({
     key: p.id,
@@ -75,8 +93,10 @@ export function getPortSlotDescriptors(facilityId) {
 }
 
 // 落地新设备时调用(interactions.js 工具栏 mouseup/核心摆放)，按种类生成初始
-// 槽位数据结构，两种槽位面板各自的字段互斥，都不适用的设备两个字段都是
-// undefined。
+// 槽位数据结构。'port' 模式和 'recipe' 模式(slotValues)本身是互斥分支，但
+// CATALYST_ITEM_BY_FACILITY 里的设备是 'recipe' 模式基础上额外叠一个虚拟
+// portItems.catalyst 槽位，所以要在 slotValues 生成之后再补一次，两个字段
+// 在这 4 台设备的实例上会同时存在。都不适用的设备两个字段都是 undefined。
 export function buildInitialSlotState(facilityId) {
   if (PORT_ITEM_FACILITY_IDS.has(facilityId)) {
     const portItems = {};
@@ -85,14 +105,22 @@ export function buildInitialSlotState(facilityId) {
   }
   const spec = getFacilitySlotSpec(facilityId);
   if (!spec) return {};
+  const result = {};
+  if (CATALYST_ITEM_BY_FACILITY.has(facilityId)) {
+    const portItems = {};
+    for (const d of getPortSlotDescriptors(facilityId)) portItems[d.key] = null;
+    result.portItems = portItems;
+  }
   if (spec.sharedPool) {
-    return { slotValues: { sharedPool: new Array(spec.totalSlots).fill(null) } };
+    result.slotValues = { sharedPool: new Array(spec.totalSlots).fill(null) };
+    return result;
   }
   const slotValues = {};
   for (const key of SLOT_GROUPS) {
     if (spec[key] != null) slotValues[key] = new Array(spec[key]).fill(null);
   }
-  return { slotValues };
+  result.slotValues = slotValues;
+  return result;
 }
 
 function collectSelectedIds(slotValues, groups) {
@@ -221,4 +249,31 @@ export function clearAllSlots(dev) {
       for (const g of SLOT_GROUPS) if (dev.slotValues[g]) dev.slotValues[g].fill(null);
     }
   }
+}
+
+// ---- 物品上下游反查(槽位悬停提示用) ----
+// 全局"谁产出/谁消耗某个物品"索引，模块加载时只扫一遍 RECIPES 建好常驻内存
+// (纯派生自静态数据，不会变，不需要每次悬停重新算)，供 interactions.js 里
+// 槽位悬停 1 秒弹出的"物品上下游"提示使用。按 facilityId 去重——同一设备的
+// 多条配方都产出/消耗某物品时只算一次，提示不需要按配方逐条罗列。
+const ITEM_PRODUCERS = new Map(); // itemId -> Set<facilityId>
+const ITEM_CONSUMERS = new Map();
+for (const [facilityId, recipes] of Object.entries(RECIPES)) {
+  for (const r of recipes) {
+    for (const o of r.outputs) {
+      if (!ITEM_PRODUCERS.has(o.itemId)) ITEM_PRODUCERS.set(o.itemId, new Set());
+      ITEM_PRODUCERS.get(o.itemId).add(facilityId);
+    }
+    for (const i of r.inputs) {
+      if (!ITEM_CONSUMERS.has(i.itemId)) ITEM_CONSUMERS.set(i.itemId, new Set());
+      ITEM_CONSUMERS.get(i.itemId).add(facilityId);
+    }
+  }
+}
+
+export function getItemUpstreamDownstream(itemId) {
+  const toNames = (map) => [...(map.get(itemId) || [])]
+    .map((id) => FACILITY_BY_ID.get(id)?.name)
+    .filter(Boolean);
+  return { producers: toNames(ITEM_PRODUCERS), consumers: toNames(ITEM_CONSUMERS) };
 }

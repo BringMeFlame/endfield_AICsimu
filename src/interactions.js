@@ -4,7 +4,8 @@ import {
   state, canvas, toolbar, toolbarTabs, toolbarIcons, hintEl, mapSelectEl,
   mapConfirmOverlayEl, mapConfirmMessageEl, mapConfirmCancelEl, mapConfirmOkEl,
   recipePanelOverlayEl, recipePanelTitleEl, recipePanelBodyEl, recipePanelClearAllEl, recipePanelCloseEl,
-  itemPickerOverlayEl, itemPickerDrawerEl, itemPickerSearchEl, itemPickerCancelEl, itemPickerTabsEl, itemPickerGridEl
+  itemPickerOverlayEl, itemPickerDrawerEl, itemPickerSearchEl, itemPickerCancelEl, itemPickerTabsEl, itemPickerGridEl,
+  itemLookupPopoverEl, itemLookupTitleEl, itemLookupProducersEl, itemLookupConsumersEl
 } from './state.js';
 import { screenToWorld, worldToCell } from './coords.js';
 import {
@@ -29,7 +30,8 @@ import { draw } from './render.js';
 import { pushHistory, undo, revertLastHistoryStep, brokeExistingValidConnection } from './history.js';
 import {
   getSlotPanelKind, getFacilitySlotSpec, buildInitialSlotState, computeSlotCandidates,
-  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS, getPortSlotDescriptors
+  getRelevantItemIds, setSlotValue, clearAllSlots, INPUT_GROUPS, OUTPUT_GROUPS, getPortSlotDescriptors,
+  CATALYST_ITEM_BY_FACILITY, getItemUpstreamDownstream
 } from './recipeSlots.js';
 import { ITEMS, ITEM_BY_ID } from './data/items.js';
 
@@ -2147,6 +2149,7 @@ function showRecipePanel(deviceId) {
 function hideRecipePanel() {
   state.recipePanelDeviceId = null;
   hideItemPicker();
+  hideItemLookupPopover();
   recipePanelOverlayEl.style.display = 'none';
 }
 
@@ -2158,6 +2161,36 @@ const SLOT_GROUP_SHAPE = {
   inputSolid: 'square', inputFluid: 'circle', outputSolid: 'square', outputFluid: 'circle'
 };
 
+// ---- 已选中物品的槽位悬停 1 秒查看"物品上下游"提示 ----
+// 纯展示型悬浮提示，不进 state 对象、不参与撤销栈/模式切换同步——和已有的
+// state.cursorTooltip/state.hoveredWarningId 是同一类"瞬时展示态"，那两个
+// 字段本来就不在 undo()/E-Q 模式重置的同步列表里，这里同理。计时器是纯 UI
+// 细节，一个模块级变量足够，不需要挂在 state 上。
+let itemLookupHoverTimer = null;
+
+function showItemLookupPopover(itemId, anchorEl) {
+  const item = ITEM_BY_ID.get(itemId);
+  if (!item) return;
+  const { producers, consumers } = getItemUpstreamDownstream(itemId);
+  itemLookupTitleEl.textContent = item.name;
+  itemLookupProducersEl.textContent = producers.length ? producers.join('、') : '（暂无已知配方产出）';
+  itemLookupConsumersEl.textContent = consumers.length ? consumers.join('、') : '（暂无已知配方消耗）';
+  itemLookupPopoverEl.style.display = 'block';
+  const rect = anchorEl.getBoundingClientRect();
+  const popRect = itemLookupPopoverEl.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - popRect.width / 2;
+  let top = rect.top - popRect.height - 8; // 默认显示在槽位正上方
+  left = Math.max(8, Math.min(left, window.innerWidth - popRect.width - 8));
+  if (top < 8) top = rect.bottom + 8; // 上方放不下(槽位太靠近视口顶部)时改显示在槽位下方
+  itemLookupPopoverEl.style.left = `${left}px`;
+  itemLookupPopoverEl.style.top = `${top}px`;
+}
+
+function hideItemLookupPopover() {
+  clearTimeout(itemLookupHoverTimer);
+  itemLookupPopoverEl.style.display = 'none';
+}
+
 function buildSlotButton(shape, itemId, onClear, onOpen) {
   const btn = document.createElement('div');
   btn.className = `recipe-slot recipe-slot-${shape}` + (itemId ? ' filled' : '');
@@ -2166,7 +2199,13 @@ function buildSlotButton(shape, itemId, onClear, onOpen) {
   if (itemId) {
     const item = ITEM_BY_ID.get(itemId);
     label.textContent = item ? item.name : itemId;
-    btn.title = item ? item.name : itemId;
+    // 不再设 btn.title——下面的悬停 1 秒提示已经完整覆盖物品名(还带上下游
+    // 信息)，留着原生 title 属性会导致浏览器自带的系统提示框和新提示先后/
+    // 同时出现，双重打扰。
+    btn.addEventListener('mouseenter', () => {
+      itemLookupHoverTimer = setTimeout(() => showItemLookupPopover(itemId, btn), 1000);
+    });
+    btn.addEventListener('mouseleave', hideItemLookupPopover);
   } else {
     label.textContent = '+';
     btn.title = '点击选择物品';
@@ -2193,6 +2232,9 @@ function buildSlotColumn(els) {
 }
 
 function renderRecipePanel() {
+  // 面板每次重新渲染都会替换掉可能正被悬停的槽位按钮节点，浏览器不会对着一个
+  // 被替换掉的节点补发 mouseleave，不主动清一次会导致悬浮提示卡在屏幕上关不掉。
+  hideItemLookupPopover();
   const dev = findRecipePanelDevice();
   recipePanelBodyEl.innerHTML = '';
   if (!dev) return;
@@ -2246,6 +2288,24 @@ function renderRecipePanel() {
   };
   const inputEls = INPUT_GROUPS.flatMap(buildEls);
   const outputEls = OUTPUT_GROUPS.flatMap(buildEls);
+
+  // 固气/液气转化机额外叠加的催化剂圆槽位(见 recipeSlots.js 的
+  // CATALYST_ITEM_BY_FACILITY)：存在 dev.portItems.catalyst 里，不属于任何
+  // INPUT_GROUPS/OUTPUT_GROUPS，抽屉侧走 group='port' 的既有分支(和热能池
+  // 燃料槽位同一套)。这一行排在 columns 之前 append，DOM 顺序上位于两栏+
+  // 箭头那一行之上；这 4 台设备的输入/输出都只有 1 个槽位，两栏等宽，
+  // .recipe-panel-columns 的 justify-content:center 会让箭头精确落在内容区
+  // 水平中点，这里同样居中就能让圆槽位正好落在箭头正上方。
+  if (CATALYST_ITEM_BY_FACILITY.has(dev.facilityId)) {
+    const catalystRow = document.createElement('div');
+    catalystRow.className = 'recipe-panel-catalyst-row';
+    catalystRow.appendChild(buildSlotButton(
+      'circle', dev.portItems.catalyst,
+      () => { setSlotValue(dev, 'port', 'catalyst', null); renderRecipePanel(); },
+      () => showItemPicker(dev.id, 'port', 'catalyst')
+    ));
+    recipePanelBodyEl.appendChild(catalystRow);
+  }
 
   const columns = document.createElement('div');
   columns.className = 'recipe-panel-columns';
