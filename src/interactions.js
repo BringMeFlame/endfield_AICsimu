@@ -2375,6 +2375,23 @@ function currentPickerBrowsePool() {
     }
     return getRelevantItemIds(dev.facilityId, 'inputRing');
   }
+  // 反应池/扩容反应池的产物槽位"本设备相关"标签页：除了配方产出的物品，还要
+  // 把当前环形槽位里的物品也算进来(哪怕它们从没在任何配方的产出里出现过)——
+  // 这是反应池特有的"原样直通"规则(recipeSlots.js 的 computeRingSlotCandidates
+  // 已经把这些物品算进可点候选，这里只是让它们在默认标签页也能被看到，不用
+  // 切到"全部物品"才找得到)。"全部物品"标签页走下面的通用分支即可，本来就
+  // 覆盖所有同 portType 物品。
+  if ((t.group === 'outputSolid' || t.group === 'outputFluid') && state.itemPickerTab !== 'all') {
+    const dev = state.devices.find((d) => d.id === t.deviceId);
+    const spec = dev && getFacilitySlotSpec(dev.facilityId);
+    if (spec && spec.inputRing != null) {
+      const relevant = getRelevantItemIds(dev.facilityId, t.group);
+      const wantPortType = t.group === 'outputSolid' ? 'solid' : 'fluid';
+      const ringItems = (dev.slotValues.inputRing || [])
+        .filter((id) => id && ITEM_BY_ID.get(id)?.portType === wantPortType);
+      return new Set([...relevant, ...ringItems]);
+    }
+  }
   const portType = currentPickerPortType();
   if (t.group === 'port' || state.itemPickerTab === 'all') {
     return new Set(ITEMS.filter((i) => i.portType === portType).map((i) => i.id));

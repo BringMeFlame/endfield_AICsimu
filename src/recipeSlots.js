@@ -162,8 +162,11 @@ function isRecipeViable(recipe, selectedInputs, selectedOutputs) {
 //   用户明确要求过"选完一组原料后，其它输入槽还要能继续选别的物品，因为反应
 //   池能并行跑多条配方"。
 // - 产物槽位候选 = "原料已经在环形槽位里全部凑齐"的配方(不要求环形槽位只
-//   属于这一条配方，可以有多条同时凑齐)产出的并集，减去这个产物方向已经选中
-//   的物品(避免同一产物在两个产物槽位里重复出现，和其它设备一致)。
+//   属于这一条配方，可以有多条同时凑齐)产出的并集，加上环形槽位里"原样直通"
+//   的物品(反应池/扩容反应池独有特性——放进环形槽位的物品不强制参与任何反应，
+//   可以原封不动地作为产物直接输出，用户明确要求的规则，其它设备没有)，减去
+//   这个产物方向已经选中的物品(避免同一产物在两个产物槽位里重复出现，和其它
+//   设备一致)。
 function computeRingSlotCandidates(facilityId, slotValues, group) {
   if (group === 'inputRing') return getRelevantItemIds(facilityId, 'inputRing');
   const ringItems = collectSelectedIds(slotValues, ['inputRing']);
@@ -174,6 +177,9 @@ function computeRingSlotCandidates(facilityId, slotValues, group) {
     for (const io of r.outputs) {
       if (itemAllowedInGroup(io.itemId, group) && !already.has(io.itemId)) candidates.add(io.itemId);
     }
+  }
+  for (const itemId of ringItems) {
+    if (itemAllowedInGroup(itemId, group) && !already.has(itemId)) candidates.add(itemId);
   }
   return candidates;
 }
