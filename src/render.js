@@ -1,8 +1,8 @@
 // ---- 绘制 ----
-import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, INVALID_COLOR, INVALID_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PORT_HOVER_FILL_BELT, PORT_HOVER_FILL_PIPE, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE, GAS_ENV_INERT_FILL, GAS_ENV_INERT_STROKE, GAS_ENV_ACID_FILL, GAS_ENV_ACID_STROKE } from './constants.js';
+import { GRID_SIZE, BELT_WIDTH, PIPE_WIDTH, BELT_CORNER_RADIUS, BELT_EDGE_WIDTH, BELT_EDGE_COLOR, FLOW_ARROW_STEP, BELT_COLOR, BELT_COLOR_SELECTED, PIPE_COLOR, PIPE_COLOR_SELECTED, INVALID_COLOR, INVALID_COLOR_SELECTED, BELT_PORT_COLOR, PIPE_PORT_COLOR, PORT_FILL_COLOR, PORT_HOVER_FILL_BELT, PORT_HOVER_FILL_PIPE, PIPE_ACCENT, BOX_SELECT_ACCENT, WARNING_ICON_RADIUS, WARNING_COLOR, POWER_RANGE_FILL, POWER_RANGE_STROKE, GAS_ENV_INERT_STROKE, GAS_ENV_ACID_STROKE } from './constants.js';
 import { state, ctx, powerSummaryEl } from './state.js';
 import { screenToWorld, worldToScreen } from './coords.js';
-import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeOutOfBoundsIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, getGasEnvRangeRect, computeGasEnvRangeRects, computeGasEnvWarnings, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
+import { getDeviceRectWorld, effectiveGridPos, computeCollidingIds, computeOutOfBoundsIds, computeUnpoweredIds, getPowerRangeRect, computePowerRangeRects, computeGasEnvRangeRects, computeGasEnvWarnings, getDeviceWarnings, getWarningIconWorldPos, getDevicePorts, isInputPortUsed, isOutputPortUsed, isPipeInputPortUsed, isPipeOutputPortUsed, rectsOverlap, SPAWN_TEMPLATES, buildSpawnPreviewDevice } from './devices.js';
 import { computeCrossings, computePipeCrossings } from './pathfinding.js';
 import { getMapWorldRect } from './mapBounds.js';
 
@@ -722,15 +722,14 @@ function drawPowerRanges() {
   ctx.restore();
 }
 
-// 单个惰气/酸气环境覆盖范围方块的绘制，画法和 drawPowerRangeRect 完全同构，
-// 只是按 r.type 换一套颜色(惰气蓝/酸气橙，见 constants.js 的说明)。
+// 单个惰气/酸气环境覆盖范围方块的绘制：只画边框、不填充(和供电范围的半透明色块
+// 区分开，因为这层是常驻显示，填充色块常驻会太抢视线)，按 r.type 换一套描边色
+// (惰气蓝/酸气橙，见 constants.js 的说明)。
 function drawGasEnvRangeRect(r) {
   const rect = getDeviceRectWorld(r.gridX, r.gridY, r.w, r.h);
   const topLeft = worldToScreen(rect.x, rect.y);
   const sw = rect.w * state.scale;
   const sh = rect.h * state.scale;
-  ctx.fillStyle = r.type === 'inert' ? GAS_ENV_INERT_FILL : GAS_ENV_ACID_FILL;
-  ctx.fillRect(topLeft.x, topLeft.y, sw, sh);
   ctx.lineWidth = scaled(2);
   ctx.setLineDash([scaled(8), scaled(5)]);
   ctx.strokeStyle = r.type === 'inert' ? GAS_ENV_INERT_STROKE : GAS_ENV_ACID_STROKE;
@@ -738,28 +737,12 @@ function drawGasEnvRangeRect(r) {
   ctx.setLineDash([]);
 }
 
-// 惰气/酸气环境覆盖范围叠层：和供电范围共用同一个 H 键开关(state.showPowerRanges，
-// 都是"纯信息展示层"，不需要为此另开一个快捷键/状态变量)。H 键关闭时同样保留
-// "正在拖拽的气体散布机"实时预览，和 drawPowerRanges 的同类逻辑一致——区别是
-// 范围类型取决于当前已选的气体(getGasEnvRangeRect 内部判断)，不是设备一放置
-// 就自带的固定值，所以没有配套的 drawSpawnPreview 落地前预览(落地时还没选气体)。
+// 惰气/酸气环境覆盖范围叠层：常驻显示，不挂在 H 键(state.showPowerRanges)下——
+// 气体散布机一旦接好惰气/酸气(getGasEnvRangeRect 内部判断)，范围边框就一直画着，
+// 不需要用户主动切换才能看见，和供电范围叠层(默认隐藏、按需查看)是不同的定位。
 function drawGasEnvRanges() {
-  if (state.showPowerRanges) {
-    ctx.save();
-    for (const r of computeGasEnvRangeRects()) drawGasEnvRangeRect(r);
-    ctx.restore();
-    return;
-  }
-  const draggedIds = new Set();
-  if (state.draggingDeviceId !== null) draggedIds.add(state.draggingDeviceId);
-  if (state.boxDragOrigin) for (const id of state.boxDragOrigin.keys()) draggedIds.add(id);
-  if (draggedIds.size === 0) return;
   ctx.save();
-  for (const dev of state.devices) {
-    if (!draggedIds.has(dev.id)) continue;
-    const r = getGasEnvRangeRect(dev);
-    if (r) drawGasEnvRangeRect(r);
-  }
+  for (const r of computeGasEnvRangeRects()) drawGasEnvRangeRect(r);
   ctx.restore();
 }
 
@@ -899,7 +882,7 @@ export function draw() {
   drawGrid();
   drawMapBoundary();      // 地图边界轮廓，画在网格之上、其它一切之下
   drawPowerRanges();      // 供电覆盖范围叠层，画在最底层，不遮挡传送带/设备
-  drawGasEnvRanges();     // 惰气/酸气环境覆盖范围叠层，同一层级、同一个 H 键开关
+  drawGasEnvRanges();     // 惰气/酸气环境覆盖范围叠层，画在同一层级，但常驻显示，不受 H 键开关影响
   drawConnections();      // 传送带 + 传送带物流桥
   drawDevices();          // 设备遮住传送带(不变)，含警告图标
   drawWaypoints();

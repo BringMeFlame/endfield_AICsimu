@@ -100,14 +100,13 @@ export const WARNING_COLOR = '#ff1744';
 export const POWER_RANGE_FILL = 'rgba(255, 193, 7, 0.12)';
 export const POWER_RANGE_STROKE = 'rgba(255, 160, 0, 0.55)';
 
-// ---- 惰气/酸气环境覆盖范围叠层(同样挂在 H 键全局开关下)：气体散布机接入惰气/
-// 酸气后，以自身为中心产生 13x13 的环境覆盖范围(devices.js 的
-// getGasEnvRangeRect)，用户明确要求惰气用蓝色边框、酸气用橙色边框区分——这是
-// 用户指定的颜色，不套用"新增独占工具模式需从未用过的色相里挑"那条规则(这里
-// 不是操作模式，是和供电范围同类的纯信息展示层)。特意选比 PIPE_ACCENT(管道
-// 模式强调色)更浅更透明的蓝、比 POWER_RANGE_STROKE(供电范围描边)更饱和更偏橙
-// 的橙，两两分得开，避免和已有蓝/橙语义混淆。----
-export const GAS_ENV_INERT_FILL = 'rgba(41, 121, 255, 0.10)';
+// ---- 惰气/酸气环境覆盖范围叠层：只画边框、不填充，常驻显示(气体散布机接好
+// 惰气/酸气后就一直画，不挂在 H 键下，和供电范围叠层是纯信息展示层但需要一直
+// 可见这点不同)。气体散布机接入惰气/酸气后，以自身为中心产生 13x13 的环境覆盖
+// 范围(devices.js 的 getGasEnvRangeRect)，用户明确要求惰气用蓝色边框、酸气用
+// 橙色边框区分——这是用户指定的颜色，不套用"新增独占工具模式需从未用过的色相
+// 里挑"那条规则(这里不是操作模式，是和供电范围同类的纯信息展示层)。特意选比
+// PIPE_ACCENT(管道模式强调色)更浅更透明的蓝、比 POWER_RANGE_STROKE(供电范围
+// 描边)更饱和更偏橙的橙，两两分得开，避免和已有蓝/橙语义混淆。----
 export const GAS_ENV_INERT_STROKE = 'rgba(41, 121, 255, 0.65)';
-export const GAS_ENV_ACID_FILL = 'rgba(255, 109, 0, 0.10)';
 export const GAS_ENV_ACID_STROKE = 'rgba(255, 109, 0, 0.7)';
