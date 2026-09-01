@@ -2193,6 +2193,23 @@ function buildSlotColumn(els) {
   return col;
 }
 
+// 反应池/扩容反应池的环形输入槽位专用布局：把传入的槽位按钮沿圆周等角度摆开
+// (12 点钟方向为起点，顺时针)，每个按钮用 CSS 变量 --ring-x/--ring-y 携带自己
+// 该在圆周上的单位坐标(-1~1)，具体像素偏移交给 style.css 的
+// .recipe-slot-ring 用 calc()换算，这里只算角度、不掺入任何像素数值。
+function buildSlotRing(els) {
+  const ring = document.createElement('div');
+  ring.className = 'recipe-slot-ring-container';
+  const n = els.length;
+  els.forEach((el, i) => {
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    el.style.setProperty('--ring-x', Math.cos(angle).toFixed(4));
+    el.style.setProperty('--ring-y', Math.sin(angle).toFixed(4));
+    ring.appendChild(el);
+  });
+  return ring;
+}
+
 function renderRecipePanel() {
   const dev = findRecipePanelDevice();
   recipePanelBodyEl.innerHTML = '';
@@ -2221,15 +2238,6 @@ function renderRecipePanel() {
 
   const spec = getFacilitySlotSpec(dev.facilityId);
   if (!spec) return; // getSlotPanelKind 已经保证不会走到这里
-  if (spec.sharedPool) {
-    const note = document.createElement('div');
-    note.className = 'recipe-panel-note';
-    note.textContent =
-      `该设备是共享槽位设计(共 ${spec.totalSlots} 个槽位，原料和产物共用同一个槽位池)，` +
-      '和其它设备"固定输入/输出槽位数"的模型不一样，槽位面板暂时还没接入这种设计，先留到后续单独实现。';
-    recipePanelBodyEl.appendChild(note);
-    return;
-  }
 
   // 原料在左、产物在右，中间一个箭头——不再按固体/流体分组标题堆叠成一整
   // 列，两栏并排把右侧空白利用起来(用户明确要求)；哪个先选都行(见
@@ -2245,6 +2253,30 @@ function renderRecipePanel() {
       () => showItemPicker(dev.id, group, index)
     ));
   };
+
+  // 反应池/扩容反应池：输入侧是不分固体/液体的环形自由槽位(spec.inputRing)，
+  // 布局走 buildSlotRing 而不是常规的纵向 buildSlotColumn；输出侧
+  // (outputSolid/outputFluid)和其它设备完全一样，直接复用 buildEls。
+  if (spec.inputRing != null) {
+    const ringEls = dev.slotValues.inputRing.map((itemId, index) => buildSlotButton(
+      'ring',
+      itemId,
+      () => { setSlotValue(dev, 'inputRing', index, null); renderRecipePanel(); },
+      () => showItemPicker(dev.id, 'inputRing', index)
+    ));
+    const outputEls = OUTPUT_GROUPS.flatMap(buildEls);
+    const ringColumns = document.createElement('div');
+    ringColumns.className = 'recipe-panel-columns';
+    ringColumns.appendChild(buildSlotRing(ringEls));
+    const ringArrow = document.createElement('div');
+    ringArrow.className = 'recipe-panel-arrow';
+    ringArrow.textContent = '→';
+    ringColumns.appendChild(ringArrow);
+    ringColumns.appendChild(buildSlotColumn(outputEls));
+    recipePanelBodyEl.appendChild(ringColumns);
+    return;
+  }
+
   const inputEls = INPUT_GROUPS.flatMap(buildEls);
   const outputEls = OUTPUT_GROUPS.flatMap(buildEls);
 
@@ -2332,6 +2364,17 @@ function currentPickerCandidateIds() {
 // 不用一上来就面对全部物品，具体见 recipeSlots.js 的 getRelevantItemIds。
 function currentPickerBrowsePool() {
   const t = state.itemPickerTarget;
+  // inputRing 不分固体/液体(只排除气体)，混不进"同 portType"这套通用分支，
+  // 单独处理："全部物品"标签页是全部非气体物品，"本设备相关"标签页复用
+  // getRelevantItemIds(内部已经按 inputRing 排除气体)，和下面通用分支的两个
+  // 子情况一一对应，只是过滤条件从"portType 相等"换成了"不是气体"。
+  if (t.group === 'inputRing') {
+    const dev = state.devices.find((d) => d.id === t.deviceId);
+    if (state.itemPickerTab === 'all') {
+      return new Set(ITEMS.filter((i) => !i.id.startsWith('item_gas_')).map((i) => i.id));
+    }
+    return getRelevantItemIds(dev.facilityId, 'inputRing');
+  }
   const portType = currentPickerPortType();
   if (t.group === 'port' || state.itemPickerTab === 'all') {
     return new Set(ITEMS.filter((i) => i.portType === portType).map((i) => i.id));
@@ -2389,7 +2432,6 @@ function renderItemPickerGrid() {
   if (!t) return;
   const dev = state.devices.find((d) => d.id === t.deviceId);
   if (!dev) return;
-  const portType = currentPickerPortType();
   const candidates = currentPickerCandidateIds();
   const pool = currentPickerBrowsePool();
   const search = state.itemPickerSearch.trim();
@@ -2410,7 +2452,11 @@ function renderItemPickerGrid() {
   for (const item of list) {
     const enabled = candidates.has(item.id);
     const cell = document.createElement('div');
-    cell.className = `item-picker-cell item-picker-cell-${portType}` + (enabled ? '' : ' disabled');
+    // 每个格子按物品自己的 portType 决定方/圆，不用抽屉整体统一的 portType——
+    // inputRing 组的候选池里固体液体混在一起，其它组里因为物品本来就是单一
+    // portType 所以两种写法结果一样，改成按物品自己的类型更准确、也不用
+    // 再区分组名。
+    cell.className = `item-picker-cell item-picker-cell-${item.portType}` + (enabled ? '' : ' disabled');
     cell.title = enabled ? item.name : `${item.name}（当前选择下不可用）`;
     const icon = document.createElement('img');
     icon.className = 'item-picker-icon';

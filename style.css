@@ -259,6 +259,26 @@ canvas {
 .recipe-slot-circle {
   border-radius: 50%;
 }
+/* 反应池/扩容反应池的环形输入槽位：固定 200x200px 的相对定位容器，槽位按钮
+   (interactions.js 的 buildSlotRing 算好 --ring-x/--ring-y 两个 -1~1 的单位
+   坐标) 用 calc() 换算成绝对定位坐标，均匀铺在半径 70px 的圆周上；槽位按钮
+   本身比常规 64px 小一圈(48px)，因为最多要在一圈里放 8 个，不缩小会挤在一起。
+   不分固体/液体形状(用户明确要求"任意固体/液体都可以放，不需要区分")，统一
+   用圆形，呼应"圆环"这个名字。 */
+.recipe-slot-ring-container {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  flex: none;
+}
+.recipe-slot-ring {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  left: calc(50% + var(--ring-x, 0) * 70px - 24px);
+  top: calc(50% + var(--ring-y, 0) * 70px - 24px);
+}
 .recipe-slot.filled {
   background: #fafafa;
   border-color: #111;

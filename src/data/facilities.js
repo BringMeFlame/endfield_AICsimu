@@ -36,11 +36,15 @@
 //   - 常规四槽位模型 `{ inputSolid?, inputFluid?, outputSolid?, outputFluid? }`，
 //     缺失的方向表示该设备没有这一类槽位（不是 0 个，是"不存在"，槽位面板据此
 //     决定要不要渲染这一组）。
-//   - 共享槽位模型 `{ sharedPool: true, totalSlots }`，目前只有「反应池」「扩容
-//     反应池」两条记录用这个：所有原料和产物共享同一个槽位池，不区分固定的
-//     输入/输出角色，和四槽位模型是完全不同的交互，`devices.js` 的
-//     `SHARED_POOL_FACILITY_IDS` 据此单独分支，槽位面板对这两个设备目前只显示
-//     "暂未支持"提示，不接入自动配方匹配。
+//   - 环形输入槽位模型 `{ inputRing, outputSolid, outputFluid }`，目前只有
+//     「反应池」「扩容反应池」两条记录用这个：输入侧不分固体/液体，是一圈可以
+//     自由塞任意固体/液体物品(不含气体)的槽位(反应池 5 个、扩容反应池 8 个，
+//     明显比单条配方实际用到的数量多，本质是一个自由物品池)；输出侧和常规
+//     四槽位模型的 outputSolid/outputFluid 完全一样。`recipeSlots.js` 把
+//     `inputRing` 当成 `INPUT_GROUPS` 里的一员接入，双向收紧算法
+//     (`isRecipeViable`/`computeSlotCandidates`)和其它设备完全复用，不是另一套
+//     独立实现；面板渲染(interactions.js 的 `renderRecipePanel`/`buildSlotRing`)
+//     按圆周布局展示输入槽位，其余交互(点击选物品/清空/Ctrl+Z)和其它设备一致。
 // 分类内设备顺序对齐官方基建列表顺序（同一设备的不同模式相邻排列，模式间顺序
 // 不额外规定），仅调整了 FACILITIES 里的排列顺序，不改动任何字段数值。
 export const FACILITIES = {
@@ -367,7 +371,7 @@ export const FACILITIES = {
       powerCost: -50,
       bandwidth: 2,
       isLowProfile: false,
-      slots: { sharedPool: true, totalSlots: 5 },
+      slots: { inputRing: 5, outputSolid: 1, outputFluid: 2 },
       ports: [
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
         { id: 'belt_out_3_4', type: 'item_output', grid: [3, 4], dir: 'down' },
@@ -387,7 +391,7 @@ export const FACILITIES = {
       powerCost: -100,
       bandwidth: 2,
       isLowProfile: false,
-      slots: { sharedPool: true, totalSlots: 8 },
+      slots: { inputRing: 8, outputSolid: 1, outputFluid: 2 },
       ports: [
         { id: 'belt_out_1_4', type: 'item_output', grid: [1, 4], dir: 'down' },
         { id: 'belt_out_2_4', type: 'item_output', grid: [2, 4], dir: 'down' },

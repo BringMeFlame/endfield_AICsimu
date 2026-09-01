@@ -4,11 +4,11 @@
 // (一个 machineId 有时对应同一物理建筑的多个模式，比如 furnance_1 同时覆盖
 // 「精炼炉（基础）」「精炼炉（液体）」两条记录)，详见
 // reference/items_recipes_template.xlsx 的「配方」sheet 与 reference/README.md。
-// 「反应池」「扩容反应池」两条记录用户注明是共享槽位设计(不区分固定的输入/
-// 输出槽位，所有原料产物共享同一个槽位池)，和这里其余记录的槽位模型不同，
-// 配方数据本身仍然收在这里，但槽位面板(interactions.js)对这两个 facilityId
-// 单独分支处理，不套用通用的 inputSolid/inputFluid/outputSolid/outputFluid
-// 四槽位模型，见 devices.js 的 SHARED_POOL_FACILITY_IDS。
+// 「反应池」「扩容反应池」两条记录的输入侧是不分固体/液体的环形自由槽位(见
+// facilities.js 的 slots.inputRing 说明)，和这里其余记录的输入槽位模型
+// (inputSolid/inputFluid 分组)不同，但配方数据本身的 inputs/outputs 字段格式
+// 完全一样，槽位面板(recipeSlots.js/interactions.js)靠 inputRing 是否存在来
+// 区分渲染方式，配方匹配算法(isRecipeViable)两者共用同一套。
 //
 // 字段说明：
 // - id/name：原样保留源数据 recipeId/recipeName。

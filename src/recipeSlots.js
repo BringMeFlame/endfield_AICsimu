@@ -35,8 +35,12 @@ export const PORT_ITEM_FACILITY_IDS = new Set([
   'dev_气体散布机', 'dev_废水处理机', 'dev_热能池',
 ]);
 
-const SLOT_GROUPS = ['inputSolid', 'inputFluid', 'outputSolid', 'outputFluid'];
-export const INPUT_GROUPS = ['inputSolid', 'inputFluid'];
+const SLOT_GROUPS = ['inputSolid', 'inputFluid', 'outputSolid', 'outputFluid', 'inputRing'];
+// inputRing：反应池/扩容反应池专属的环形输入槽位(见 facilities.js 的 slots
+// 字段说明)，不分固体/液体，混在 INPUT_GROUPS 里当成"输入方向"的一员——
+// collectSelectedIds/pruneInvalidSelections/getRequiredGasEnvType 都是遍历这个
+// 数组算"已选输入物品集合"，加进来之后这些函数不用改代码就能正确处理环形槽位。
+export const INPUT_GROUPS = ['inputSolid', 'inputFluid', 'inputRing'];
 export const OUTPUT_GROUPS = ['outputSolid', 'outputFluid'];
 
 // 固气转化机/液气转化机启动需要额外接入一路流体催化剂，且两组设备各自只认
@@ -58,6 +62,16 @@ const GROUP_PORT_TYPE = { inputSolid: 'solid', inputFluid: 'fluid', outputSolid:
 function itemPortType(itemId) {
   const item = ITEM_BY_ID.get(itemId);
   return item ? item.portType : null;
+}
+
+// 常规四组槽位按 portType 精确匹配；inputRing 不分固体/液体，两种都收，只排除
+// 气体(气体走气体散布机接环境，不参与反应池配方)。气体物品的 portType 和普通
+// 液体一样都是 'fluid'(items.js 没有单独的 gas portType)，只能按 id 前缀
+// 'item_gas_' 识别——注意和 'item_gasjar_*' 这几个固体耐压罐物品前缀不同，
+// 不会被误判。
+function itemAllowedInGroup(itemId, group) {
+  if (group === 'inputRing') return !itemId.startsWith('item_gas_');
+  return itemPortType(itemId) === GROUP_PORT_TYPE[group];
 }
 
 export function getFacilitySlotSpec(facilityId) {
@@ -111,10 +125,6 @@ export function buildInitialSlotState(facilityId) {
     for (const d of getPortSlotDescriptors(facilityId)) portItems[d.key] = null;
     result.portItems = portItems;
   }
-  if (spec.sharedPool) {
-    result.slotValues = { sharedPool: new Array(spec.totalSlots).fill(null) };
-    return result;
-  }
   const slotValues = {};
   for (const key of SLOT_GROUPS) {
     if (spec[key] != null) slotValues[key] = new Array(spec[key]).fill(null);
@@ -151,13 +161,12 @@ export function computeSlotCandidates(facilityId, slotValues, group) {
   const selectedInputs = collectSelectedIds(slotValues, INPUT_GROUPS);
   const selectedOutputs = collectSelectedIds(slotValues, OUTPUT_GROUPS);
   const isInput = INPUT_GROUPS.includes(group);
-  const portType = GROUP_PORT_TYPE[group];
   const already = isInput ? selectedInputs : selectedOutputs;
   const candidates = new Set();
   for (const r of RECIPES[facilityId] || []) {
     if (!isRecipeViable(r, selectedInputs, selectedOutputs)) continue;
     for (const io of isInput ? r.inputs : r.outputs) {
-      if (itemPortType(io.itemId) === portType && !already.has(io.itemId)) candidates.add(io.itemId);
+      if (itemAllowedInGroup(io.itemId, group) && !already.has(io.itemId)) candidates.add(io.itemId);
     }
   }
   return candidates;
@@ -170,11 +179,10 @@ export function computeSlotCandidates(facilityId, slotValues, group) {
 // "全部同 portType 物品"。
 export function getRelevantItemIds(facilityId, group) {
   const isInput = INPUT_GROUPS.includes(group);
-  const portType = GROUP_PORT_TYPE[group];
   const ids = new Set();
   for (const r of RECIPES[facilityId] || []) {
     for (const io of isInput ? r.inputs : r.outputs) {
-      if (itemPortType(io.itemId) === portType) ids.add(io.itemId);
+      if (itemAllowedInGroup(io.itemId, group)) ids.add(io.itemId);
     }
   }
   return ids;
@@ -211,7 +219,7 @@ function pruneInvalidSelections(facilityId, slotValues) {
 // 这里只做"清理不再合法的选择"，不主动帮用户填任何东西，空槽位再怎么收紧
 // 也只是收紧抽屉里能点的范围，不会自己冒出一个值。
 function normalizeSlotValues(facilityId, slotValues) {
-  if (!slotValues || slotValues.sharedPool) return;
+  if (!slotValues) return;
   let guard = 0;
   while (pruneInvalidSelections(facilityId, slotValues) && guard++ < 50) {
     // 循环体是空的：pruneInvalidSelections 本身就是"跑一轮、返回有没有变化"，
@@ -277,10 +285,6 @@ export function clearAllSlots(dev) {
     for (const key of Object.keys(dev.portItems)) dev.portItems[key] = null;
   }
   if (dev.slotValues) {
-    if (dev.slotValues.sharedPool) {
-      dev.slotValues.sharedPool.fill(null);
-    } else {
-      for (const g of SLOT_GROUPS) if (dev.slotValues[g]) dev.slotValues[g].fill(null);
-    }
+    for (const g of SLOT_GROUPS) if (dev.slotValues[g]) dev.slotValues[g].fill(null);
   }
 }
