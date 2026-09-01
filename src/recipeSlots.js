@@ -154,10 +154,38 @@ function isRecipeViable(recipe, selectedInputs, selectedOutputs) {
   return true;
 }
 
+// 反应池/扩容反应池的环形槽位专属候选算法：和其它设备"当前选择只能对应同一条
+// 配方"(isRecipeViable) 的模型根本不同——反应池可以同时并行跑多条配方，环形
+// 槽位里的原料不要求只属于一条配方，所以：
+// - 环形输入槽位不做收紧，候选永远是这台设备全部配方里出现过的输入物品(不含
+//   气体)，不因为其它槽位已经选了什么而变化，也不排除自己已经选过的物品——
+//   用户明确要求过"选完一组原料后，其它输入槽还要能继续选别的物品，因为反应
+//   池能并行跑多条配方"。
+// - 产物槽位候选 = "原料已经在环形槽位里全部凑齐"的配方(不要求环形槽位只
+//   属于这一条配方，可以有多条同时凑齐)产出的并集，减去这个产物方向已经选中
+//   的物品(避免同一产物在两个产物槽位里重复出现，和其它设备一致)。
+function computeRingSlotCandidates(facilityId, slotValues, group) {
+  if (group === 'inputRing') return getRelevantItemIds(facilityId, 'inputRing');
+  const ringItems = collectSelectedIds(slotValues, ['inputRing']);
+  const already = collectSelectedIds(slotValues, OUTPUT_GROUPS);
+  const candidates = new Set();
+  for (const r of RECIPES[facilityId] || []) {
+    if (!r.inputs.every((i) => ringItems.has(i.itemId))) continue;
+    for (const io of r.outputs) {
+      if (itemAllowedInGroup(io.itemId, group) && !already.has(io.itemId)) candidates.add(io.itemId);
+    }
+  }
+  return candidates;
+}
+
 // 目标槽位组(如还没填的 inputFluid/outputSolid)现在能选什么：遍历"仍可行"的
 // 配方，收集它们里对应 portType、且这个方向还没被选中的物品 id。原料槽位和
-// 产物槽位调用的是同一个函数，只是 group 不同，双向对称。
+// 产物槽位调用的是同一个函数，只是 group 不同，双向对称。反应池/扩容反应池
+// (facilitySlots.inputRing 存在)不走这套"单一配方"模型，分派给
+// computeRingSlotCandidates。
 export function computeSlotCandidates(facilityId, slotValues, group) {
+  const spec = getFacilitySlotSpec(facilityId);
+  if (spec && spec.inputRing != null) return computeRingSlotCandidates(facilityId, slotValues, group);
   const selectedInputs = collectSelectedIds(slotValues, INPUT_GROUPS);
   const selectedOutputs = collectSelectedIds(slotValues, OUTPUT_GROUPS);
   const isInput = INPUT_GROUPS.includes(group);
