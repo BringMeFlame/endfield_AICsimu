@@ -7,10 +7,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "fetch:icons": "node scripts/fetch-item-icons.mjs"
+    "preview": "npm run build && wrangler dev",
+    "fetch:icons": "node scripts/fetch-item-icons.mjs",
+    "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
-    "vite": "^8.2.2"
+    "@cloudflare/vite-plugin": "^1.54.3",
+    "vite": "^8.2.2",
+    "wrangler": "^4.128.0"
   }
 }
