@@ -2119,8 +2119,9 @@ function bindMapConfirmModalEvents() {
 // main.js 启动时调用：首次加载 state.devices 为空，performMapSwitch 不需要
 // 经过确认浮层这一层判断。
 export function bootstrapDefaultMap() {
-  performMapSwitch(MAP_CATALOG[0]);
-  mapSelectEl.value = MAP_CATALOG[0].id;
+  const defaultMap = MAP_CATALOG.find(m => m.id === 'map_武陵_主基地') ?? MAP_CATALOG[0];
+  performMapSwitch(defaultMap);
+  mapSelectEl.value = defaultMap.id;
 }
 
 // ---- 右键槽位面板 + 物品选择抽屉 ----

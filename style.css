@@ -137,7 +137,7 @@ canvas {
   padding: 6px 16px;
   cursor: pointer;
 }
-#map-confirm-ok {
+#map-confirm-actions #map-confirm-ok {
   background: #111;
   color: #fff;
 }
