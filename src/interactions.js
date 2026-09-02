@@ -2479,7 +2479,7 @@ function renderItemPickerGrid() {
     icon.className = 'item-picker-icon';
     icon.alt = item.name;
     icon.onerror = () => icon.replaceWith(iconFallbackEl(item.name));
-    icon.src = `/icons/items/${item.id}.webp`;
+    icon.src = `${import.meta.env.BASE_URL}icons/items/${item.id}.webp`;
     cell.appendChild(icon);
     const label = document.createElement('span');
     label.className = 'item-picker-cell-label';
