@@ -293,8 +293,12 @@ export function setSlotValue(dev, group, index, itemId) {
 // "宁可多提醒"而不是"必须所有可行配方一致"，避免真正需要环境时反而不提示。
 function detectGasEnvType(environmentCondition) {
   if (!environmentCondition) return null;
-  if (environmentCondition.includes('惰气环境')) return 'inert';
-  if (environmentCondition.includes('酸气环境')) return 'acid';
+  // 用 startsWith 而不是 includes：气体反应炉那条配方的说明文字里写着"与惰气
+  // 环境类似"，如果用 includes('惰气环境') 会在"需求酸气环境（与惰气环境类似...）"
+  // 里误判成惰气——这是修过的真实 bug。所有 environmentCondition 文案都固定以
+  // "需求X气环境"开头，用 startsWith 精确匹配开头就不会被后面的说明文字干扰。
+  if (environmentCondition.startsWith('需求惰气环境')) return 'inert';
+  if (environmentCondition.startsWith('需求酸气环境')) return 'acid';
   return null;
 }
 
